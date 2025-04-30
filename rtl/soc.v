@@ -1,0 +1,3 @@
+module soc;
+
+endmodule // soc
