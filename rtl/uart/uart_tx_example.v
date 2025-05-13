@@ -1,4 +1,9 @@
-module wrapper (
+// This module serves as an example for using UART TX module. After
+// initialization, this module will continuously send "Hello" to the host
+// machine.  We can use tio to verify it.
+// $ tio -b 115200 /dev/ttyUSB1
+
+module uart_tx_example (
     input  wire i_clk,
     input  wire i_rst_n,
     output wire o_uart_tx
@@ -40,4 +45,4 @@ module wrapper (
   always @(*) begin
     tx_data = hello[counter%7];
   end
-endmodule  // wrapper
+endmodule  // uart_tx_example

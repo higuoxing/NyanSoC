@@ -15,7 +15,7 @@ $(BOARD).json: $(BOARD)-synth.json $(BOARD).cst
 	$(NEXTPNR) --top $(TOP_MODULE)  --json $< --write $@ --device "GW2AR-LV18QN88C8/I7" --vopt family="GW2A-18C" --vopt cst=$(BOARD).cst
 
 $(BOARD)-synth.json: $(SOURCES)
-	$(YOSYS) -D LEDS_NR=6 -D OSC_TYPE_OSC -D INV_BTN=1 -D CPU_FREQ=27 -D BAUD_RATE=115200 -D NUM_HCLK=5 -p "read_verilog $^; hierarchy -top $(TOP_MODULE); synth_gowin -json $@ -family gw2a"
+	$(YOSYS) -p "read_verilog $^; hierarchy -top $(TOP_MODULE); synth_gowin -json $@ -family gw2a"
 
 .PHONY: flash
 flash: $(BOARD).fs
