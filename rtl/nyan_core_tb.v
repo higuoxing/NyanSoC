@@ -99,7 +99,7 @@ module nyan_core_tb;
 
    always @(posedge clk) begin
       if (rst_n) begin
-	 $display("pc=%h addr=%h valid=%d ready=%d insn=%h X[0]=%h X[1]=%h X[2]=%h X[3]=%h X[4]=%h", dut.pc, dut.imem_addr, dut.imem_valid, imem_ready, dut.insn_q, dut.X[0], dut.X[1], dut.X[2], dut.X[3], dut.X[4]);
+	 $display("pc=%h addr=%h valid=%d ready=%d insn=%h X[0]=%h X[1]=%h X[2]=%h X[3]=%h X[4]=%h", nyan_core_dut0.pc, nyan_core_dut0.imem_addr, nyan_core_dut0.imem_valid, imem_ready, nyan_core_dut0.insn_q, nyan_core_dut0.X[0], nyan_core_dut0.X[1], nyan_core_dut0.X[2], nyan_core_dut0.X[3], nyan_core_dut0.X[4]);
       end
    end
 endmodule // nyan_core_tb

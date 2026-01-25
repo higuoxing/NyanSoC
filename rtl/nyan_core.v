@@ -171,6 +171,15 @@ module nyan_core (
 	insn_jal = { opcode_q } == { 7'b1101111 },
 	insn_sb = { opcode_q, funct3_q } == { 7'b0100011, 3'b000 };
 
+   wire [31:0] load_eff_addr;
+   wire [31:0] store_eff_addr;
+
+   reg [31:0]  load_eff_addr_q;
+   reg [31:0]  store_eff_addr_q;
+
+   assign load_eff_addr = imm_I + X[rs1];
+   assign store_eff_addr = imm_S + X[rs1];
+
    integer reg_idx;
    always @(posedge clk) begin
       if (reset) begin
@@ -198,6 +207,9 @@ module nyan_core (
 	 imm_B_q <= 32'b0;
 	 imm_U_q <= 32'b0;
 	 imm_J_q <= 32'b0;
+
+	 load_eff_addr_q <= 32'b0;
+	 store_eff_addr_q <= 32'b0;
 
 	 // Reset regfile.
 	 for (reg_idx = 0; reg_idx < 32; reg_idx = reg_idx + 1) begin
@@ -229,23 +241,25 @@ module nyan_core (
 
 		 if (insn_load) begin
 		    cpu_state <= cpu_state_load;
-
-		    dmem_raddr <= imm_I + X[rs1];
+		    load_eff_addr_q <= load_eff_addr;
+		    dmem_raddr <= {load_eff_addr[31:2], 2'b00};
 		    dmem_rvalid <= 1'b1;
 		 end else if (insn_store) begin
 		    cpu_state <= cpu_state_store;
 
 		    dmem_wvalid <= 1'b1;
-		    dmem_waddr <= imm_S + X[rs1];
+		    store_eff_addr_q <= store_eff_addr;
+		    dmem_waddr <= {store_eff_addr[31:2], 2'b00};
+
 		    case (store_type)
 		      SB: begin
-			 dmem_wstrb <= 4'b0001 << (dmem_waddr[1:0]);
-			 dmem_wdata <= {4{X[rs2][7:0]}} << (dmem_waddr[1:0] << 3);
+			 dmem_wstrb <= 4'b0001 << (store_eff_addr[1:0]);
+			 dmem_wdata <= {4{X[rs2][7:0]}} << (store_eff_addr[1:0] << 3);
 		      end
 
 		      SH: begin
-			 dmem_wstrb <= dmem_waddr[1] ? 4'b1100 : 4'b0011;
-			 dmem_wdata <= {2{X[rs2][15:0]}} << (dmem_waddr[1] << 4);
+			 dmem_wstrb <= store_eff_addr[1] ? 4'b1100 : 4'b0011;
+			 dmem_wdata <= {2{X[rs2][15:0]}} << (store_eff_addr[1] << 4);
 		      end
 
 		      SW: begin
@@ -282,13 +296,29 @@ module nyan_core (
 	   cpu_state_load: begin
 	      if (dmem_rvalid && i_dmem_rready) begin
 		 if (insn_lb) begin
-		    X[rd_q][7:0] <= $signed(i_dmem_rdata[7:0]);
+		    case (load_eff_addr_q[1:0])
+		      2'b00: X[rd_q] <= {{24{i_dmem_rdata[7]}}, i_dmem_rdata[7:0]};
+		      2'b01: X[rd_q] <= {{24{i_dmem_rdata[15]}}, i_dmem_rdata[15:8]};
+		      2'b10: X[rd_q] <= {{24{i_dmem_rdata[23]}}, i_dmem_rdata[23:16]};
+		      2'b11: X[rd_q] <= {{24{i_dmem_rdata[31]}}, i_dmem_rdata[31:24]};
+		    endcase // case (load_eff_addr_q[1:0])
 		 end else if (insn_lbu) begin
-		    X[rd_q][7:0] <= $unsigned(i_dmem_rdata[7:0]);
+		    case (load_eff_addr_q[1:0])
+		      2'b00: X[rd_q] <= {24'b0, i_dmem_rdata[7:0]};
+		      2'b01: X[rd_q] <= {24'b0, i_dmem_rdata[15:8]};
+		      2'b10: X[rd_q] <= {24'b0, i_dmem_rdata[23:16]};
+		      2'b11: X[rd_q] <= {24'b0, i_dmem_rdata[31:24]};
+		    endcase // case (load_eff_addr_q[1:0])
 		 end else if (insn_lh) begin
-		    X[rd_q][15:0] <= $signed(i_dmem_rdata[15:0]);
+		    if (load_eff_addr_q[1] == 1'b0)
+		      X[rd_q] <= {{16{i_dmem_rdata[15]}}, i_dmem_rdata[15:0]};
+		    else
+		      X[rd_q] <= {{16{i_dmem_rdata[31]}}, i_dmem_rdata[31:16]};
 		 end else if (insn_lhu) begin
-		    X[rd_q][15:0] <= $unsigned(i_dmem_rdata[15:0]);
+		    if (load_eff_addr_q[1] == 1'b0)
+		      X[rd_q] <= {16'b0, i_dmem_rdata[15:0]};
+		    else
+		      X[rd_q] <= {16'b0, i_dmem_rdata[31:16]};
 		 end else if (insn_lw) begin
 		    X[rd_q] <= i_dmem_rdata;
 		 end
