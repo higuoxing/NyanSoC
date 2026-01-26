@@ -113,34 +113,11 @@ module nyan_core (
    wire [2:0]  funct3;
    wire [6:0]  funct7;
    wire [31:0] imm_I, imm_S, imm_B, imm_U, imm_J;
-   wire	       insn_load;
-   wire	       insn_store;
+   wire	       insn_lb, insn_lh, insn_lbu, insn_lhu, insn_lw,
+	       insn_sb, insn_sh, insn_sw;
 
-   assign insn_load = opcode == 7'b0000011 &&
-		      (funct3 == 3'b000 || funct3 == 3'b001 ||
-		       funct3 == 3'b010 || funct3 == 3'b100 || funct3 == 3'b101);
-   assign insn_store = opcode == 7'b0100011 &&
-		       (funct3 == 3'b000 || funct3 == 3'b001 || funct3 == 3'b010);
-
-   localparam SB = 2'b01;
-   localparam SH = 2'b10;
-   localparam SW = 2'b11;
-   wire [1:0]  store_type;
-
-   assign store_type = (opcode == 7'b0100011 && funct3 == 3'b000) ? SB
-		       : (opcode == 7'b0100011 && funct3 == 3'b001) ? SH
-		       : opcode == 7'b0100011 && funct3 == 3'b010 ? SW
-		       : 2'b00;
-
-   // Valid in execute state.
-   reg [31:0]  insn_q;
-   reg [4:0]   rs1_q, rs2_q, rd_q;
-   reg [6:0]   opcode_q;
-   reg [2:0]   funct3_q;
-   reg [6:0]   funct7_q;
-   reg [31:0]  imm_I_q, imm_S_q, imm_B_q, imm_U_q, imm_J_q;
-   reg	       insn_load_q;
-   reg	       insn_store_q;
+   wire [31:0] load_eff_addr;
+   wire [31:0] store_eff_addr;
 
    assign insn = i_imem_rdata;
    decode_insn
@@ -158,21 +135,22 @@ module nyan_core (
 		   .o_imm_U(imm_U),
 		   .o_imm_J(imm_J));
 
-   wire insn_lui = { opcode_q } == { 7'b0110111 },
-	insn_addi = { opcode_q, funct3_q } == { 7'b0010011, 3'b000 },
-	insn_add = { opcode_q, funct3_q, funct7_q } == { 7'b0110011, 3'b000, 7'b0000000 },
-	insn_sub = { opcode_q, funct3_q, funct7_q } == { 7'b0110011, 3'b000, 7'b0100000 },
-	insn_beq = { opcode_q, funct3_q } == { 7'b1100011, 3'b000 },
-	insn_lb = { opcode_q, funct3_q } == { 7'b0000011, 3'b000 },
-	insn_lh = { opcode_q, funct3_q } == { 7'b0000011, 3'b001 },
-	insn_lw = { opcode_q, funct3_q } == { 7'b0000011, 3'b010 },
-	insn_lbu = { opcode_q, funct3_q } == { 7'b0000011, 3'b100 },
-	insn_lhu = { opcode_q, funct3_q } == { 7'b0000011, 3'b101 },
-	insn_jal = { opcode_q } == { 7'b1101111 },
-	insn_sb = { opcode_q, funct3_q } == { 7'b0100011, 3'b000 };
+   assign insn_lb = { opcode, funct3 } == { 7'b0000011, 3'b000 };
+   assign insn_lh = { opcode, funct3 } == { 7'b0000011, 3'b001 };
+   assign insn_lw = { opcode, funct3 } == { 7'b0000011, 3'b010 };
+   assign insn_lbu = { opcode, funct3 } == { 7'b0000011, 3'b100 };
+   assign insn_lhu = { opcode, funct3 } == { 7'b0000011, 3'b101 };
+   assign insn_sb = { opcode, funct3 } == { 7'b0100011, 3'b000 };
+   assign insn_sh = { opcode, funct3 } == { 7'b0100011, 3'b001 };
+   assign insn_sw = { opcode, funct3 } == { 7'b0100011, 3'b010 };
 
-   wire [31:0] load_eff_addr;
-   wire [31:0] store_eff_addr;
+   // Valid in execute state.
+   reg [31:0]  insn_q;
+   reg [4:0]   rs1_q, rs2_q, rd_q;
+   reg [6:0]   opcode_q;
+   reg [2:0]   funct3_q;
+   reg [6:0]   funct7_q;
+   reg [31:0]  imm_I_q, imm_S_q, imm_B_q, imm_U_q, imm_J_q;
 
    reg [31:0]  load_eff_addr_q;
    reg [31:0]  store_eff_addr_q;
@@ -239,34 +217,28 @@ module nyan_core (
 		 imm_U_q <= imm_U;
 		 imm_J_q <= imm_J;
 
-		 if (insn_load) begin
+		 if (insn_lb || insn_lh || insn_lbu || insn_lhu || insn_lw) begin
 		    cpu_state <= cpu_state_load;
 		    load_eff_addr_q <= load_eff_addr;
 		    dmem_raddr <= {load_eff_addr[31:2], 2'b00};
 		    dmem_rvalid <= 1'b1;
-		 end else if (insn_store) begin
+		 end else if (insn_sb || insn_sh || insn_sw) begin
 		    cpu_state <= cpu_state_store;
 
 		    dmem_wvalid <= 1'b1;
 		    store_eff_addr_q <= store_eff_addr;
 		    dmem_waddr <= {store_eff_addr[31:2], 2'b00};
 
-		    case (store_type)
-		      SB: begin
-			 dmem_wstrb <= 4'b0001 << (store_eff_addr[1:0]);
-			 dmem_wdata <= {4{X[rs2][7:0]}} << (store_eff_addr[1:0] << 3);
-		      end
-
-		      SH: begin
-			 dmem_wstrb <= store_eff_addr[1] ? 4'b1100 : 4'b0011;
-			 dmem_wdata <= {2{X[rs2][15:0]}} << (store_eff_addr[1] << 4);
-		      end
-
-		      SW: begin
-			 dmem_wstrb <= 4'b1111;
-			 dmem_wdata <= X[rs2];
-		      end
-		    endcase // case (store_type)
+		    if (insn_sb) begin
+		       dmem_wstrb <= 4'b0001 << (store_eff_addr[1:0]);
+		       dmem_wdata <= {4{X[rs2][7:0]}} << (store_eff_addr[1:0] << 3);
+		    end else if (insn_sh) begin
+		       dmem_wstrb <= store_eff_addr[1] ? 4'b1100 : 4'b0011;
+		       dmem_wdata <= {2{X[rs2][15:0]}} << (store_eff_addr[1] << 4);
+		    end else if (insn_sw) begin
+		       dmem_wstrb <= 4'b1111;
+		       dmem_wdata <= X[rs2];
+		    end
 		 end
 	      end
 	   end // case: cpu_state_fetch
@@ -335,11 +307,60 @@ module nyan_core (
       end
    end // always @ (posedge clk)
 
+   wire insn_lui_q = { opcode_q } == { 7'b0110111 },
+	insn_auipc_q = { opcode_q } == { 7'b0010111 },
+	insn_jal_q = { opcode_q } == { 7'b1101111 },
+	insn_jalr_q = { opcode_q, funct3_q } == { 7'b1100111, 3'b000 },
+
+	insn_beq_q = { opcode_q, funct3_q } == { 7'b1100011, 3'b000 },
+	insn_bne_q = { opcode_q, funct3_q } == { 7'b1100011, 3'b001 },
+	insn_blt_q = { opcode_q, funct3_q } == { 7'b1100011, 3'b100 },
+	insn_bge_q = { opcode_q, funct3_q } == { 7'b1100011, 3'b101 },
+	insn_bltu_q = { opcode_q, funct3_q } == { 7'b1100011, 3'b110 },
+	insn_bgeu_q = { opcode_q, funct3_q } == { 7'b1100011, 3'b111 },
+
+	insn_lb_q = { opcode_q, funct3_q } == { 7'b0000011, 3'b000 },
+	insn_lh_q = { opcode_q, funct3_q } == { 7'b0000011, 3'b001 },
+	insn_lw_q = { opcode_q, funct3_q } == { 7'b0000011, 3'b010 },
+	insn_lbu_q = { opcode_q, funct3_q } == { 7'b0000011, 3'b100 },
+	insn_lhu_q = { opcode_q, funct3_q } == { 7'b0000011, 3'b101 },
+
+	insn_sb_q = { opcode_q, funct3_q } == { 7'b0100011, 3'b000 },
+	insn_sh_q = { opcode_q, funct3_q } == { 7'b0100011, 3'b001 },
+	insn_sw_q = { opcode_q, funct3_q } == { 7'b0100011, 3'b010 },
+
+	insn_addi_q = { opcode_q, funct3_q } == { 7'b0010011, 3'b000 },
+	insn_slti_q = { opcode_q, funct3_q } == { 7'b0010011, 3'b010 },
+	insn_sltiu_q = { opcode_q, funct3_q } == { 7'b0010011, 3'b011 },
+	insn_xori_q   = { opcode_q, funct3_q } == { 7'b0010011, 3'b100 },
+	insn_ori_q    = { opcode_q, funct3_q } == { 7'b0010011, 3'b110 },
+	insn_andi_q   = { opcode_q, funct3_q } == { 7'b0010011, 3'b111 },
+
+	insn_slli_q   = { opcode_q, funct3_q, funct7_q } == { 7'b0010011, 3'b001, 7'b0000000 },
+	insn_srli_q   = { opcode_q, funct3_q, funct7_q } == { 7'b0010011, 3'b101, 7'b0000000 },
+	insn_srai_q   = { opcode_q, funct3_q, funct7_q } == { 7'b0010011, 3'b101, 7'b0100000 },
+
+	insn_add_q    = { opcode_q, funct3_q, funct7_q } == { 7'b0110011, 3'b000, 7'b0000000 },
+	insn_sub_q    = { opcode_q, funct3_q, funct7_q } == { 7'b0110011, 3'b000, 7'b0100000 },
+	insn_sll_q    = { opcode_q, funct3_q, funct7_q } == { 7'b0110011, 3'b001, 7'b0000000 },
+	insn_slt_q    = { opcode_q, funct3_q, funct7_q } == { 7'b0110011, 3'b010, 7'b0000000 },
+	insn_sltu_q   = { opcode_q, funct3_q, funct7_q } == { 7'b0110011, 3'b011, 7'b0000000 },
+	insn_xor_q    = { opcode_q, funct3_q, funct7_q } == { 7'b0110011, 3'b100, 7'b0000000 },
+	insn_srl_q    = { opcode_q, funct3_q, funct7_q } == { 7'b0110011, 3'b101, 7'b0000000 },
+	insn_sra_q    = { opcode_q, funct3_q, funct7_q } == { 7'b0110011, 3'b101, 7'b0100000 },
+	insn_or_q     = { opcode_q, funct3_q, funct7_q } == { 7'b0110011, 3'b110, 7'b0000000 },
+	insn_and_q    = { opcode_q, funct3_q, funct7_q } == { 7'b0110011, 3'b111, 7'b0000000 },
+
+	insn_fence_q  = { opcode_q } == { 7'b0001111 },
+	insn_ecall_q  = { opcode_q, funct3_q, insn_q[31:20] } == { 7'b1110011, 3'b000, 12'b000000000000 },
+	insn_ebreak_q = { opcode_q, funct3_q, insn_q[31:20] } == { 7'b1110011, 3'b000, 12'b000000000001 };
 
    reg	take_branch;
    reg	write_rd;
    reg [31:0] pc_next;
    reg [31:0] rs1_val, rs2_val, rd_val;
+   reg [31:0] jalr_target;
+   reg [4:0]  shamt;
 
    always @(*) begin
       take_branch = 1'b0;
@@ -348,31 +369,121 @@ module nyan_core (
       rs1_val = X[rs1_q];
       rs2_val = X[rs2_q];
       rd_val = 32'b0;
-      insn_load_q = 1'b0;
-      insn_store_q = 1'b0;
+      jalr_target = 32'b0;
+      shamt = 5'b0;
 
-      if (insn_lui) begin
+      if (insn_lui_q) begin
 	 write_rd = 1'b1;
 	 rd_val = imm_U_q;
-      end else if (insn_jal) begin
+      end else if (insn_auipc_q) begin
+	 write_rd = 1'b1;
+	 rd_val = pc + imm_U_q;
+      end else if (insn_jal_q) begin
 	 write_rd = 1'b1;
 	 rd_val = pc + 4;
 	 pc_next = pc + imm_J_q;
-      end else if (insn_addi) begin
+      end else if (insn_jalr_q) begin
 	 write_rd = 1'b1;
-	 rd_val = rs1_val + imm_I_q;
-      end else if (insn_add) begin
-	 write_rd = 1'b1;
-	 rd_val = rs1_val + rs2_val;
-      end else if (insn_sub) begin
-	 write_rd = 1'b1;
-	 rd_val = rs1_val - rs2_val;
-      end else if (insn_beq) begin
+	 jalr_target = (rs1_val + imm_I_q) & 32'hffff_ffffe;
+	 rd_val = pc + 4; // Save the return address.
+	 pc_next = jalr_target;
+      end else if (insn_beq_q) begin
 	 if (rs1_val == rs2_val) begin
 	    take_branch = 1'b1;
 	    pc_next = pc + imm_B_q;
 	 end
-      end else if (insn_lb || insn_lh || insn_lw) begin
+      end else if (insn_bne_q) begin
+	 if (rs1_val != rs2_val) begin
+	    take_branch = 1'b1;
+	    pc_next = pc + imm_B_q;
+	 end
+      end else if (insn_blt_q) begin
+	 if ($signed(rs1_val) < $signed(rs2_val)) begin
+	    take_branch = 1'b1;
+	    pc_next = pc + imm_B_q;
+	 end
+      end else if (insn_bge_q) begin
+	 if ($signed(rs1_val) >= $signed(rs2_val)) begin
+	    take_branch = 1'b1;
+	    pc_next = pc + imm_B_q;
+	 end
+      end else if (insn_bltu_q) begin
+	 if ($unsigned(rs1_val) < $unsigned(rs2_val)) begin
+	    take_branch = 1'b1;
+	    pc_next = pc + imm_B_q;
+	 end
+      end else if (insn_bgeu_q) begin
+	 if ($unsigned(rs1_val) >= $unsigned(rs2_val)) begin
+	    take_branch = 1'b1;
+	    pc_next = pc + imm_B_q;
+	 end
+      end else if (insn_lb_q || insn_lh_q || insn_lw_q || insn_lbu_q || insn_lhu_q) begin
+	 // Do nothing here.
+      end else if (insn_sb_q || insn_sh_q || insn_sw_q) begin
+	 // Do nothing here.
+      end else if (insn_addi_q) begin
+	 write_rd = 1'b1;
+	 rd_val = rs1_val + imm_I_q;
+      end else if (insn_slti_q) begin
+	 write_rd = 1'b1;
+	 rd_val = $signed(rs1_val) < $signed(imm_I_q) ? 32'b1 : 32'b0;
+      end else if (insn_sltiu_q) begin
+	 write_rd = 1'b1;
+	 rd_val = $unsigned(rs1_val) < $unsigned(imm_I_q) ? 32'b1 : 32'b0;
+      end else if (insn_xori_q) begin
+	 write_rd = 1'b1;
+	 rd_val = rs1_val ^ imm_I_q;
+      end else if (insn_ori_q) begin
+	 write_rd = 1'b1;
+	 rd_val = rs1_val | imm_I_q;
+      end else if (insn_andi_q) begin
+	 write_rd = 1'b1;
+	 rd_val = rs1_val & imm_I_q;
+      end else if (insn_slli_q) begin
+	 shamt = insn_q[24:20] & 5'h1f;
+	 write_rd = 1'b1;
+	 rd_val = rs1_val << shamt;
+      end else if (insn_srli_q) begin
+	 shamt = insn_q[24:20] & 5'h1f;
+	 write_rd = 1'b1;
+	 rd_val = rs1_val >> shamt;
+      end else if (insn_srai_q) begin
+	 shamt = insn_q[24:20] & 5'h1f;
+	 write_rd = 1'b1;
+	 rd_val = $signed(rs1_val) >>> shamt;
+      end else if (insn_add_q) begin
+	 write_rd = 1'b1;
+	 rd_val = rs1_val + rs2_val;
+      end else if (insn_sub_q) begin
+	 write_rd = 1'b1;
+	 rd_val = rs1_val - rs2_val;
+      end else if (insn_sll_q) begin
+	 shamt = rs2_val[4:0] & 5'h1f;
+	 write_rd = 1'b1;
+	 rd_val = rs1_val << shamt;
+      end else if (insn_slt_q) begin
+	 write_rd = 1'b1;
+	 rd_val = $signed(rs1_val) < $signed(rs2_val) ? 32'b1 : 32'b0;
+      end else if (insn_sltu_q) begin
+	 write_rd = 1'b1;
+	 rd_val = rs1_val < rs2_val ? 32'b1 : 32'b0;
+      end else if (insn_xor_q) begin
+	 write_rd = 1'b1;
+	 rd_val = rs1_val ^ rs2_val;
+      end else if (insn_srl_q) begin
+	 shamt = rs2_val[4:0] & 5'h1f;
+	 write_rd = 1'b1;
+	 rd_val = rs1_val >> shamt;
+      end else if (insn_sra_q) begin
+	 shamt = rs2_val[4:0] & 5'h1f;
+	 write_rd = 1'b1;
+	 rd_val = $signed(rs1_val) >>> shamt;
+      end else if (insn_or_q) begin
+	 write_rd = 1'b1;
+	 rd_val = rs1_val | rs2_val;
+      end else if (insn_and_q) begin
+	 write_rd = 1'b1;
+	 rd_val = rs1_val & rs2_val;
       end
    end // always @ (*)
 
