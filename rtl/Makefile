@@ -4,7 +4,8 @@ imem.elf: imem.s
 		-Ttext=0 imem.s -o imem.elf
 
 imem.hex: imem.elf
-	riscv64-elf-objcopy -O verilog imem.elf imem.hex
+	riscv64-elf-objcopy -O binary imem.elf imem.bin
+	hexdump -v -e '1/4 "%08x\n"' imem.bin > imem.hex
 
 sim: imem.hex
 	iverilog -g2012 nyan_core.v nyan_core_tb.v

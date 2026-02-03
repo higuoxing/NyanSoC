@@ -66,9 +66,10 @@ module nyan_core (
 		  input wire	     i_dmem_wready,
 		  // }}
 
-		  output wire	     o_trap
+		  output reg	     o_trap
 );
    reg trap;
+
    reg [31:0] pc;
    reg [31:0] X[32];
 
@@ -151,9 +152,9 @@ module nyan_core (
    integer reg_idx;
    always @(posedge i_clk) begin
       if (!i_rst_n) begin
+	 o_trap <= 1'b0;
 	 pc <= 32'b0;
 	 cpu_state <= cpu_state_fetch;
-	 trap <= 1'b0;
 
 	 for (reg_idx = 0; reg_idx < 32; reg_idx = reg_idx + 1) X[reg_idx] <= 32'b0;
       end else begin
@@ -201,6 +202,8 @@ module nyan_core (
 	   end // case: cpu_state_fetch
 
 	   cpu_state_execute: begin
+	      if (trap)
+		o_trap <= 1'b1;
 	      if (write_rd && rd_q != 5'b0) X[rd_q] <= rd_val;
 	      pc <= pc_next;
 	      cpu_state <= cpu_state_fetch;
@@ -319,9 +322,10 @@ module nyan_core (
    reg [4:0]  shamt;
 
    always @(*) begin
+      trap = 1'b0;
       take_branch = 1'b0;
       write_rd = 1'b0;
-      pc_next = pc + 4;
+      pc_next = pc_q + 4;
       rs1_val = X[rs1_q];
       rs2_val = X[rs2_q];
       rd_val = 32'b0;
@@ -333,45 +337,45 @@ module nyan_core (
 	 rd_val = imm_U_q;
       end else if (insn_auipc_q) begin
 	 write_rd = 1'b1;
-	 rd_val = pc + imm_U_q;
+	 rd_val = pc_q + imm_U_q;
       end else if (insn_jal_q) begin
 	 write_rd = 1'b1;
-	 rd_val = pc + 4;
-	 pc_next = pc + imm_J_q;
+	 rd_val = pc_q + 4;
+	 pc_next = pc_q + imm_J_q;
       end else if (insn_jalr_q) begin
 	 write_rd = 1'b1;
 	 jalr_target = (rs1_val + imm_I_q) & 32'hffff_fffe;
-	 rd_val = pc + 4; // Save the return address.
+	 rd_val = pc_q + 4; // Save the return address.
 	 pc_next = jalr_target;
       end else if (insn_beq_q) begin
 	 if (rs1_val == rs2_val) begin
 	    take_branch = 1'b1;
-	    pc_next = pc + imm_B_q;
+	    pc_next = pc_q + imm_B_q;
 	 end
       end else if (insn_bne_q) begin
 	 if (rs1_val != rs2_val) begin
 	    take_branch = 1'b1;
-	    pc_next = pc + imm_B_q;
+	    pc_next = pc_q + imm_B_q;
 	 end
       end else if (insn_blt_q) begin
 	 if ($signed(rs1_val) < $signed(rs2_val)) begin
 	    take_branch = 1'b1;
-	    pc_next = pc + imm_B_q;
+	    pc_next = pc_q + imm_B_q;
 	 end
       end else if (insn_bge_q) begin
 	 if ($signed(rs1_val) >= $signed(rs2_val)) begin
 	    take_branch = 1'b1;
-	    pc_next = pc + imm_B_q;
+	    pc_next = pc_q + imm_B_q;
 	 end
       end else if (insn_bltu_q) begin
 	 if ($unsigned(rs1_val) < $unsigned(rs2_val)) begin
 	    take_branch = 1'b1;
-	    pc_next = pc + imm_B_q;
+	    pc_next = pc_q + imm_B_q;
 	 end
       end else if (insn_bgeu_q) begin
 	 if ($unsigned(rs1_val) >= $unsigned(rs2_val)) begin
 	    take_branch = 1'b1;
-	    pc_next = pc + imm_B_q;
+	    pc_next = pc_q + imm_B_q;
 	 end
       end else if (insn_lb_q || insn_lh_q || insn_lw_q || insn_lbu_q || insn_lhu_q) begin
 	 // Do nothing here.
