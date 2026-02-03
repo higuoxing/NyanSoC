@@ -384,7 +384,7 @@ module nyan_core (
 	 pc_next = pc + imm_J_q;
       end else if (insn_jalr_q) begin
 	 write_rd = 1'b1;
-	 jalr_target = (rs1_val + imm_I_q) & 32'hffff_ffffe;
+	 jalr_target = (rs1_val + imm_I_q) & 32'hffff_fffe;
 	 rd_val = pc + 4; // Save the return address.
 	 pc_next = jalr_target;
       end else if (insn_beq_q) begin
