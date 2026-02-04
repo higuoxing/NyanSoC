@@ -1,6 +1,6 @@
 `default_nettype none `timescale 1 ns / 1 ps
 
-module decode_insn(
+module decoder(
 		   input wire [31:0]  i_insn,
 		   output wire [4:0]  o_rs1,
 		   output wire [4:0]  o_rs2,
@@ -36,38 +36,38 @@ module decode_insn(
    assign o_imm_J = {{12{i_insn[31]}}, i_insn[19:12], i_insn[20], i_insn[30:21], 1'b0};
    // }}
 
-endmodule // decode_insn
+endmodule // decoder
 
-module nyan_core (
-		  input wire	     i_clk,
-		  input wire	     i_rst_n,
+module nyanrv (
+	       input wire	     i_clk,
+	       input wire	     i_rst_n,
 
-		  // Instruction Memory
-		  // {{
-		  output wire [31:0] o_imem_addr,
-		  output wire	     o_imem_valid,
-		  input wire [31:0]  i_imem_rdata,
-		  input wire	     i_imem_ready,
-		  // }}
+	       // Instruction Memory
+	       // {{
+	       output wire [31:0] o_imem_addr,
+	       output wire	     o_imem_valid,
+	       input wire [31:0]  i_imem_rdata,
+	       input wire	     i_imem_ready,
+	       // }}
 
-		  // Data Memory
-		  // {{
-		  //    Read ports
-		  output wire [31:0] o_dmem_raddr,
-		  output wire	     o_dmem_rvalid,
-		  input wire [31:0]  i_dmem_rdata,
-		  input wire	     i_dmem_rready,
+	       // Data Memory
+	       // {{
+	       //    Read ports
+	       output wire [31:0] o_dmem_raddr,
+	       output wire	     o_dmem_rvalid,
+	       input wire [31:0]  i_dmem_rdata,
+	       input wire	     i_dmem_rready,
 
-		  //    Write ports
-		  output wire [31:0] o_dmem_waddr,
-		  output wire	     o_dmem_wvalid,
-		  output wire [3:0]  o_dmem_wstrb,
-		  output wire [31:0] o_dmem_wdata,
-		  input wire	     i_dmem_wready,
-		  // }}
+	       //    Write ports
+	       output wire [31:0] o_dmem_waddr,
+	       output wire	     o_dmem_wvalid,
+	       output wire [3:0]  o_dmem_wstrb,
+	       output wire [31:0] o_dmem_wdata,
+	       input wire	     i_dmem_wready,
+	       // }}
 
-		  output reg	     o_trap
-);
+	       output reg	     o_trap
+	       );
    reg trap;
 
    reg [31:0] pc;
@@ -90,20 +90,20 @@ module nyan_core (
 	       insn_sb, insn_sh, insn_sw;
 
    assign insn = i_imem_rdata;
-   decode_insn
-     u_decode(
-	      .i_insn(insn),
-	      .o_rs1(rs1),
-	      .o_rs2(rs2),
-	      .o_rd(rd),
-	      .o_opcode(opcode),
-	      .o_funct3(f3),
-	      .o_funct7(f7),
-	      .o_imm_I(imm_I),
-	      .o_imm_S(imm_S),
-	      .o_imm_B(imm_B),
-	      .o_imm_U(imm_U),
-	      .o_imm_J(imm_J));
+   decoder
+     u_decoder(
+	       .i_insn(insn),
+	       .o_rs1(rs1),
+	       .o_rs2(rs2),
+	       .o_rd(rd),
+	       .o_opcode(opcode),
+	       .o_funct3(f3),
+	       .o_funct7(f7),
+	       .o_imm_I(imm_I),
+	       .o_imm_S(imm_S),
+	       .o_imm_B(imm_B),
+	       .o_imm_U(imm_U),
+	       .o_imm_J(imm_J));
 
 
    assign insn_sb = { opcode, f3 } == { 7'b0100011, 3'b000 };
@@ -449,4 +449,4 @@ module nyan_core (
       end
    end // always @ (*)
 
-endmodule // nyan_core
+endmodule // nyanrv

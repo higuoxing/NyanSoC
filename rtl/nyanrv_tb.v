@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-module nyan_core_tb;
+module nyanrv_tb;
    reg clk;
    reg rst_n;
 
@@ -15,7 +15,7 @@ module nyan_core_tb;
    wire        trap;
 
    // Instantiate your core
-   nyan_core uut (
+   nyanrv uut (
       .i_clk(clk),
       .i_rst_n(rst_n),
       .o_imem_addr(imem_addr),
@@ -39,7 +39,7 @@ module nyan_core_tb;
    always #5 clk = ~clk;
 
    // Memory array (32-bit words)
-   reg [31:0] mem [0:10240];
+   reg [31:0] mem [0:1023];
 
    // --- Unified Memory Logic ---
    always @(posedge clk) begin
@@ -122,4 +122,4 @@ module nyan_core_tb;
       $finish;
    end
 
-endmodule // nyan_core_tb
+endmodule // nyanrv_tb
