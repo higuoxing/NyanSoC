@@ -70,8 +70,16 @@ module nyanrv (
 	       );
    reg trap;
 
+   // Registers {{
    reg [31:0] pc;
    reg [31:0] X[32];
+
+   reg [31:0] CSR[4];
+   localparam mstatus = 0;
+   localparam mtvec = 1;
+   localparam mepc = 2;
+   localparam mcause = 3;
+   // }}
 
    reg [1:0]   cpu_state;
    localparam  cpu_state_fetch = 2'b00;
@@ -86,8 +94,6 @@ module nyanrv (
    wire [2:0]  f3;
    wire [6:0]  f7;
    wire [31:0] imm_I, imm_S, imm_B, imm_U, imm_J;
-   wire	       insn_lb, insn_lh, insn_lbu, insn_lhu, insn_lw,
-	       insn_sb, insn_sh, insn_sw;
 
    assign insn = i_imem_rdata;
    decoder
@@ -104,11 +110,6 @@ module nyanrv (
 	       .o_imm_B(imm_B),
 	       .o_imm_U(imm_U),
 	       .o_imm_J(imm_J));
-
-
-   assign insn_sb = { opcode, f3 } == { 7'b0100011, 3'b000 };
-   assign insn_sh = { opcode, f3 } == { 7'b0100011, 3'b001 };
-   assign insn_sw = { opcode, f3 } == { 7'b0100011, 3'b010 };
 
    // Valid in execute state.
    reg [31:0] pc_q;
@@ -153,10 +154,10 @@ module nyanrv (
    always @(posedge i_clk) begin
       if (!i_rst_n) begin
 	 o_trap <= 1'b0;
-	 pc <= 32'b0;
 	 cpu_state <= cpu_state_fetch;
-
+	 pc <= 32'b0;
 	 for (reg_idx = 0; reg_idx < 32; reg_idx = reg_idx + 1) X[reg_idx] <= 32'b0;
+	 for (reg_idx = 0; reg_idx < 4; reg_idx = reg_idx + 1) CSR[reg_idx] <= 32'b0;
       end else begin
 	 case (cpu_state)
 	   cpu_state_fetch: begin
@@ -202,11 +203,30 @@ module nyanrv (
 	   end // case: cpu_state_fetch
 
 	   cpu_state_execute: begin
-	      if (trap)
-		o_trap <= 1'b1;
-	      if (write_rd && rd_q != 5'b0) X[rd_q] <= rd_val;
-	      pc <= pc_next;
-	      cpu_state <= cpu_state_fetch;
+	      if (insn_ecall_q || insn_ebreak_q || trap) begin
+		 // Save current pc to mepc (the address of the ecall instruction).
+		 CSR[mepc] <= pc_q;
+
+		 // Set the cause.
+		 if (insn_ecall_q)
+		   CSR[mcause] <= 32'd11; // Machine-mode environment call
+		 else if (insn_ebreak_q)
+		   CSR[mcause] <= 32'd3; // Breakpoint
+		 else
+		   CSR[mcause] <= 32'd2; // Illegal instruction
+
+		 // Jump to handler and reset state.
+		 pc <= CSR[mtvec];
+		 cpu_state <= cpu_state_fetch;
+
+		 if (trap)
+		   o_trap <= 1'b1;
+	      end else begin
+		 if (write_rd && rd_q != 5'b0) X[rd_q] <= rd_val;
+		 if (write_csr_rd) CSR[csr_rd] <= csr_rd_val;
+		 pc <= pc_next;
+		 cpu_state <= cpu_state_fetch;
+	      end
 	   end
 
 	   cpu_state_load: begin
@@ -312,7 +332,16 @@ module nyanrv (
 
 	insn_fence_q  = { opcode_q } == { 7'b0001111 },
 	insn_ecall_q  = { opcode_q, f3_q, insn_q[31:20] } == { 7'b1110011, 3'b000, 12'b000000000000 },
-	insn_ebreak_q = { opcode_q, f3_q, insn_q[31:20] } == { 7'b1110011, 3'b000, 12'b000000000001 };
+	insn_ebreak_q = { opcode_q, f3_q, insn_q[31:20] } == { 7'b1110011, 3'b000, 12'b000000000001 },
+	insn_mret_q = { opcode_q, f3_q, insn_q[31:20] }   == { 7'b1110011, 3'b000, 12'b001100000010 },
+
+	// System
+	insn_csrrw_q = { opcode_q, f3_q } == { 7'b1110011, 3'b001 },
+	insn_csrrs_q = { opcode_q, f3_q } == { 7'b1110011, 3'b010 },
+	insn_csrrc_q = { opcode_q, f3_q } == { 7'b1110011, 3'b011 },
+	insn_csrrwi_q = { opcode_q, f3_q } == { 7'b1110011, 3'b101 },
+	insn_csrrsi_q = { opcode_q, f3_q } == { 7'b1110011, 3'b110 },
+	insn_csrrci_q = { opcode_q, f3_q } == { 7'b1110011, 3'b111 };
 
    reg	take_branch;
    reg	write_rd;
@@ -320,6 +349,10 @@ module nyanrv (
    reg [31:0] rs1_val, rs2_val, rd_val;
    reg [31:0] jalr_target;
    reg [4:0]  shamt;
+
+   reg [1:0]  csr_rs, csr_rd;
+   reg [31:0] csr_rd_val;
+   reg	      write_csr_rd;
 
    always @(*) begin
       trap = 1'b0;
@@ -331,6 +364,11 @@ module nyanrv (
       rd_val = 32'b0;
       jalr_target = 32'b0;
       shamt = 5'b0;
+
+      csr_rs = 2'b0;
+      csr_rd = 2'b0;
+      csr_rd_val = 32'b0;
+      write_csr_rd = 1'b0;
 
       if (insn_lui_q) begin
 	 write_rd = 1'b1;
@@ -444,6 +482,56 @@ module nyanrv (
       end else if (insn_and_q) begin
 	 write_rd = 1'b1;
 	 rd_val = rs1_val & rs2_val;
+      end else if (insn_ecall_q) begin
+      end else if (insn_ebreak_q) begin
+      end else if (insn_fence_q) begin
+      end else if (insn_mret_q) begin
+	 pc_next = CSR[mepc];
+      end else if (insn_csrrw_q || insn_csrrs_q || insn_csrrc_q ||
+		   insn_csrrwi_q || insn_csrrsi_q || insn_csrrci_q) begin
+	 case (imm_I_q) // csr_addr
+	   12'h300: begin
+	      csr_rs = mstatus;
+	      csr_rd = mstatus;
+	   end
+	   12'h305: begin
+	      csr_rs = mtvec;
+	      csr_rd = mtvec;
+	   end
+	   12'h341: begin
+	      csr_rs = mepc;
+	      csr_rd = mepc;
+	   end
+	   12'h342: begin
+	      csr_rs = mcause;
+	      csr_rd = mcause;
+	   end
+	   default:
+	     trap = 1'b1;
+	 endcase // case (imm_I_q)
+
+	 write_rd = 1'b1;
+	 rd_val = CSR[csr_rs];
+
+	 if (insn_csrrw_q) begin
+	    write_csr_rd = 1'b1;
+	    csr_rd_val = rs1_val;
+	 end else if (insn_csrrs_q) begin
+	    write_csr_rd = (rs1_q != 5'b0);
+	    csr_rd_val = CSR[csr_rs] | rs1_val;
+	 end else if (insn_csrrc_q) begin
+	    write_csr_rd = (rs1_q != 5'b0);
+	    csr_rd_val = CSR[csr_rs] & ~rs1_val;
+	 end else if (insn_csrrwi_q) begin
+	    write_csr_rd = 1'b1;
+	    csr_rd_val = {27'b0, rs1_q};
+	 end else if (insn_csrrsi_q) begin
+	    write_csr_rd = (rs1_q != 5'b0);
+	    csr_rd_val = CSR[csr_rs] | {27'b0, rs1_q};
+	 end else begin // csrrci
+	    write_csr_rd = (rs1_q != 5'b0);
+	    csr_rd_val = CSR[csr_rs] & ~{27'b0, rs1_q};
+	 end
       end else begin
 	 trap = 1'b1;
       end
