@@ -350,6 +350,7 @@ module nyanrv (
    reg [31:0] jalr_target;
    reg [4:0]  shamt;
 
+   wire [11:0] csr_addr = insn_q[31:20];
    reg [1:0]  csr_rs, csr_rd;
    reg [31:0] csr_rd_val;
    reg	      write_csr_rd;
@@ -489,7 +490,7 @@ module nyanrv (
 	 pc_next = CSR[mepc];
       end else if (insn_csrrw_q || insn_csrrs_q || insn_csrrc_q ||
 		   insn_csrrwi_q || insn_csrrsi_q || insn_csrrci_q) begin
-	 case (imm_I_q) // csr_addr
+	 case (csr_addr)
 	   12'h300: begin
 	      csr_rs = mstatus;
 	      csr_rd = mstatus;
