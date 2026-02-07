@@ -74,11 +74,14 @@ module nyanrv (
    reg [31:0] pc;
    reg [31:0] X[32];
 
-   reg [31:0] CSR[4];
+   reg [31:0] CSR[6];
    localparam mstatus = 0;
-   localparam mtvec = 1;
-   localparam mepc = 2;
-   localparam mcause = 3;
+   localparam mnstatus = 1;
+   localparam mtvec = 2;
+   localparam mepc = 3;
+   localparam mcause = 4;
+   localparam mhartid = 5;
+   localparam mcsr_max = 6;
    // }}
 
    reg [1:0]   cpu_state;
@@ -156,7 +159,7 @@ module nyanrv (
 	 cpu_state <= cpu_state_fetch;
 	 pc <= 32'b0;
 	 for (reg_idx = 0; reg_idx < 32; reg_idx = reg_idx + 1) X[reg_idx] <= 32'b0;
-	 for (reg_idx = 0; reg_idx < 4; reg_idx = reg_idx + 1) CSR[reg_idx] <= 32'b0;
+	 for (reg_idx = 0; reg_idx < mcsr_max; reg_idx = reg_idx + 1) CSR[reg_idx] <= 32'b0;
       end else begin
 	 case (cpu_state)
 	   cpu_state_fetch: begin
@@ -485,6 +488,10 @@ module nyanrv (
 	      csr_rs = mstatus;
 	      csr_rd = mstatus;
 	   end
+	   12'h301: begin
+	      csr_rs = mnstatus;
+	      csr_rd = mnstatus;
+	   end
 	   12'h305: begin
 	      csr_rs = mtvec;
 	      csr_rd = mtvec;
@@ -496,6 +503,10 @@ module nyanrv (
 	   12'h342: begin
 	      csr_rs = mcause;
 	      csr_rd = mcause;
+	   end
+	   12'hf14: begin
+	      csr_rs = mhartid;
+	      csr_rd = mhartid;
 	   end
 	   default:
 	     trap = 1'b1;
