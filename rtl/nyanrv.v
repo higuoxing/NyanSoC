@@ -139,7 +139,6 @@ module nyanrv (
    reg [31:0]  dmem_waddr;
    reg [31:0]  dmem_wdata;
    reg [3:0]   dmem_wstrb;
-   reg	       dmem_wvalid;
 
    assign o_dmem_waddr = dmem_waddr;
    assign o_dmem_wdata = dmem_wdata;
@@ -277,7 +276,6 @@ module nyanrv (
 
 	   cpu_state_store: begin
 	      if (i_dmem_wready) begin
-		 dmem_wvalid <= 1'b0;
 		 pc <= pc_next;
 		 cpu_state <= cpu_state_fetch;
 	      end
@@ -343,7 +341,6 @@ module nyanrv (
 	insn_csrrsi_q = { opcode_q, f3_q } == { 7'b1110011, 3'b110 },
 	insn_csrrci_q = { opcode_q, f3_q } == { 7'b1110011, 3'b111 };
 
-   reg	take_branch;
    reg	write_rd;
    reg [31:0] pc_next;
    reg [31:0] rs1_val, rs2_val, rd_val;
@@ -357,7 +354,6 @@ module nyanrv (
 
    always @(*) begin
       trap = 1'b0;
-      take_branch = 1'b0;
       write_rd = 1'b0;
       pc_next = pc_q + 4;
       rs1_val = X[rs1_q];
@@ -388,32 +384,26 @@ module nyanrv (
 	 pc_next = jalr_target;
       end else if (insn_beq_q) begin
 	 if (rs1_val == rs2_val) begin
-	    take_branch = 1'b1;
 	    pc_next = pc_q + imm_B_q;
 	 end
       end else if (insn_bne_q) begin
 	 if (rs1_val != rs2_val) begin
-	    take_branch = 1'b1;
 	    pc_next = pc_q + imm_B_q;
 	 end
       end else if (insn_blt_q) begin
 	 if ($signed(rs1_val) < $signed(rs2_val)) begin
-	    take_branch = 1'b1;
 	    pc_next = pc_q + imm_B_q;
 	 end
       end else if (insn_bge_q) begin
 	 if ($signed(rs1_val) >= $signed(rs2_val)) begin
-	    take_branch = 1'b1;
 	    pc_next = pc_q + imm_B_q;
 	 end
       end else if (insn_bltu_q) begin
 	 if ($unsigned(rs1_val) < $unsigned(rs2_val)) begin
-	    take_branch = 1'b1;
 	    pc_next = pc_q + imm_B_q;
 	 end
       end else if (insn_bgeu_q) begin
 	 if ($unsigned(rs1_val) >= $unsigned(rs2_val)) begin
-	    take_branch = 1'b1;
 	    pc_next = pc_q + imm_B_q;
 	 end
       end else if (insn_lb_q || insn_lh_q || insn_lw_q || insn_lbu_q || insn_lhu_q) begin
