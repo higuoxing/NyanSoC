@@ -1,7 +1,7 @@
-imem.elf: imem.s
-	riscv64-elf-gcc -O0 -nostdlib \
-		-march=rv32i -mabi=ilp32 -mno-relax \
-		-Ttext=0 imem.s -o imem.elf
+# imem.elf: imem.s
+# 	riscv64-elf-gcc -O0 -nostdlib \
+# 		-march=rv32i -mabi=ilp32 -mno-relax \
+# 		-Ttext=0 imem.s -o imem.elf
 
 imem.bin: imem.elf
 	riscv64-elf-objcopy -O binary imem.elf imem.bin

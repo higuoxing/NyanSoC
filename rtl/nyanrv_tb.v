@@ -39,7 +39,7 @@ module nyanrv_tb;
    always #5 clk = ~clk;
 
    // Memory array (32-bit words)
-   reg [31:0] mem [0:1023];
+   reg [31:0] mem [0:10240];
 
    // --- Unified Memory Logic ---
    always @(posedge clk) begin
@@ -78,14 +78,37 @@ module nyanrv_tb;
       end
    end
 
-   // --- Console Logging ---
-   always @(posedge clk) begin
-      if (rst_n) begin
-         if (uut.cpu_state == 2'b01) begin // Execute state
-            $display("--- Step: PC=%h | Instr=%h ---", uut.pc_q, uut.insn_q);
-            $display("Registers: x1=%h, x2=%h, x3=%h, x9=%h, x31=%h", 
-                     uut.X[1], uut.X[2], uut.X[3], uut.X[9], uut.X[31]);
+   // ------------------------------------------------------------
+   // Console Logging Helper (nyanrv-compatible)
+   // ------------------------------------------------------------
+   integer i;
+
+   always @(posedge uut.i_clk) begin
+      if (!uut.i_rst_n)
+        ; // no logging during reset
+      else if (uut.cpu_state == 2'b01) begin // cpu_state_execute
+
+         $display("");
+         $display("==================================================");
+         $display("PC    : 0x%08h", uut.pc_q);
+         $display("INSTR : 0x%08h", uut.insn_q);
+
+         // ---- Integer Registers ----
+         $display("Registers:");
+         for (i = 1; i < 32; i = i + 1) begin
+            $display("  x%-2d = 0x%08h", i, uut.X[i]);
          end
+
+         // ---- CSRs ----
+         $display("CSRs:");
+         $display("  mstatus  = 0x%08h", uut.CSR[0]);
+	 $display("  mnstatus = 0x%08h", uut.CSR[1]);
+         $display("  mtvec    = 0x%08h", uut.CSR[2]);
+         $display("  mepc     = 0x%08h", uut.CSR[3]);
+         $display("  mcause   = 0x%08h", uut.CSR[4]);
+	 $display("  mhartid  = 0x%08h", uut.CSR[5]);
+
+         $display("==================================================");
       end
    end
 
