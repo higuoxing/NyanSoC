@@ -1,148 +1,129 @@
-`timescale 1ns / 1ps
+`timescale 1 ns / 1 ps
 
 module nyanrv_tb;
-   reg clk;
-   reg rst_n;
 
-   // Memory Interface
-   wire [31:0] imem_addr, dmem_raddr, dmem_waddr, dmem_wdata;
-   wire        imem_valid, dmem_rvalid, dmem_wvalid;
-   wire [3:0]  dmem_wstrb;
-   reg [31:0]  imem_rdata, dmem_rdata;
-   reg         imem_ready, dmem_ready;
+  parameter IMEM_WORDS = 1024;
+  parameter DMEM_WORDS = 1024;
+  parameter IMEM_ADDR_BITS = 10;  // log2(IMEM_WORDS) for byte addr 12 bits -> word index 10
+  parameter DMEM_ADDR_BITS = 10;
 
-   // Trap signal
-   wire        trap;
+  reg         i_clk;
+  reg         i_rst_n;
 
-   // Instantiate your core
-   nyanrv uut (
-      .i_clk(clk),
-      .i_rst_n(rst_n),
-      .o_imem_addr(imem_addr),
-      .o_imem_valid(imem_valid),
-      .i_imem_rdata(imem_rdata),
-      .i_imem_ready(imem_ready),
-      .o_dmem_raddr(dmem_raddr),
-      .o_dmem_rvalid(dmem_rvalid),
-      .i_dmem_rdata(dmem_rdata),
-      .i_dmem_rready(dmem_ready),
-      .o_dmem_waddr(dmem_waddr),
-      .o_dmem_wvalid(dmem_wvalid),
-      .o_dmem_wstrb(dmem_wstrb),
-      .o_dmem_wdata(dmem_wdata),
-      .i_dmem_wready(dmem_ready),
-      .o_trap(trap)
-   );
+  wire [31:0] o_imem_addr;
+  wire        o_imem_valid;
+  reg  [31:0] i_imem_rdata;
+  reg         i_imem_ready;
 
-   // Clock generation
-   initial clk = 0;
-   always #5 clk = ~clk;
+  wire [31:0] o_dmem_raddr;
+  wire        o_dmem_rvalid;
+  reg  [31:0] i_dmem_rdata;
+  reg         i_dmem_rready;
 
-   // Memory array (32-bit words)
-   reg [31:0] mem [0:10240];
+  wire [31:0] o_dmem_waddr;
+  wire        o_dmem_wvalid;
+  wire [ 3:0] o_dmem_wstrb;
+  wire [31:0] o_dmem_wdata;
+  wire        i_dmem_wready;
 
-   // --- Unified Memory Logic ---
-   always @(posedge clk) begin
-      if (!rst_n) begin
-         imem_ready <= 1'b0;
-         imem_rdata <= 32'b0;
-         dmem_ready <= 1'b0;
-         dmem_rdata <= 32'b0;
-      end else begin
-         // Instruction Fetch
-         if (imem_valid) begin
-            imem_rdata <= mem[imem_addr >> 2];
-            imem_ready <= 1'b1;
-            // $display("FETCH: Addr=%h Instr=%h", imem_addr, mem[imem_addr >> 2]);
-         end else begin
-            imem_ready <= 1'b0;
-         end
+  wire        o_trap;
 
-         // Data Memory (Load/Store)
-         if (dmem_rvalid || dmem_wvalid) begin
-            dmem_ready <= 1'b1;
-            // Read path
-            dmem_rdata <= mem[dmem_raddr >> 2]; 
-            
-            // Write path (with byte strobes)
-            if (dmem_wvalid) begin
-               if (dmem_wstrb[0]) mem[dmem_waddr>>2][7:0]   <= dmem_wdata[7:0];
-               if (dmem_wstrb[1]) mem[dmem_waddr>>2][15:8]  <= dmem_wdata[15:8];
-               if (dmem_wstrb[2]) mem[dmem_waddr>>2][23:16] <= dmem_wdata[23:16];
-               if (dmem_wstrb[3]) mem[dmem_waddr>>2][31:24] <= dmem_wdata[31:24];
-               $display("DMEM WRITE: Addr=%h Data=%h Strobe=%b", dmem_waddr, dmem_wdata, dmem_wstrb);
-            end
-         end else begin
-            dmem_ready <= 1'b0;
-         end
-      end
-   end
+  // Instruction and data memories (word-addressed for indexing)
+  reg  [31:0] imem          [0:IMEM_WORDS-1];
+  reg  [31:0] dmem          [0:DMEM_WORDS-1];
 
-   // ------------------------------------------------------------
-   // Console Logging Helper (nyanrv-compatible)
-   // ------------------------------------------------------------
-   integer i;
+  // Clock
+  initial i_clk = 0;
+  always #5 i_clk = ~i_clk;
 
-   always @(posedge uut.i_clk) begin
-      if (!uut.i_rst_n)
-        ; // no logging during reset
-      else if (uut.cpu_state == 2'b01) begin // cpu_state_execute
+  // Instruction memory
+  wire [IMEM_ADDR_BITS-1:0] imem_idx = o_imem_addr[IMEM_ADDR_BITS+1:2];
+  always @(*) begin
+    i_imem_rdata = (o_imem_valid && imem_idx < IMEM_WORDS) ? imem[imem_idx] : 32'h0000_0013; // nop if OOB
+    i_imem_ready = o_imem_valid;
+  end
 
-         $display("");
-         $display("==================================================");
-         $display("PC    : 0x%08h", uut.pc_q);
-         $display("INSTR : 0x%08h", uut.insn_q);
+  // Data memory
+  wire [DMEM_ADDR_BITS-1:0] dmem_raddr_idx = o_dmem_raddr[DMEM_ADDR_BITS+1:2];
+  always @(*) begin
+    i_dmem_rdata  = (o_dmem_rvalid && dmem_raddr_idx < DMEM_WORDS) ? dmem[dmem_raddr_idx] : 32'b0;
+    i_dmem_rready = o_dmem_rvalid;
+  end
 
-         // ---- Integer Registers ----
-         $display("Registers:");
-         for (i = 1; i < 32; i = i + 1) begin
-            $display("  x%-2d = 0x%08h", i, uut.X[i]);
-         end
+  // Data memory: synchronous write
+  wire [DMEM_ADDR_BITS-1:0] dmem_waddr_idx = o_dmem_waddr[DMEM_ADDR_BITS+1:2];
+  always @(posedge i_clk) begin
+    if (o_dmem_wvalid && dmem_waddr_idx < DMEM_WORDS) begin
+      if (o_dmem_wstrb[0]) dmem[dmem_waddr_idx][7:0] <= o_dmem_wdata[7:0];
+      if (o_dmem_wstrb[1]) dmem[dmem_waddr_idx][15:8] <= o_dmem_wdata[15:8];
+      if (o_dmem_wstrb[2]) dmem[dmem_waddr_idx][23:16] <= o_dmem_wdata[23:16];
+      if (o_dmem_wstrb[3]) dmem[dmem_waddr_idx][31:24] <= o_dmem_wdata[31:24];
+    end
+  end
+  assign i_dmem_wready = o_dmem_wvalid;  // accept store same cycle
 
-         // ---- CSRs ----
-         $display("CSRs:");
-         $display("  mstatus  = 0x%08h", uut.CSR[0]);
-	 $display("  mnstatus = 0x%08h", uut.CSR[1]);
-         $display("  mtvec    = 0x%08h", uut.CSR[2]);
-         $display("  mepc     = 0x%08h", uut.CSR[3]);
-         $display("  mcause   = 0x%08h", uut.CSR[4]);
-	 $display("  mhartid  = 0x%08h", uut.CSR[5]);
+  nyanrv u_dut (
+      .i_clk        (i_clk),
+      .i_rst_n      (i_rst_n),
+      .o_imem_addr  (o_imem_addr),
+      .o_imem_valid (o_imem_valid),
+      .i_imem_rdata (i_imem_rdata),
+      .i_imem_ready (i_imem_ready),
+      .o_dmem_raddr (o_dmem_raddr),
+      .o_dmem_rvalid(o_dmem_rvalid),
+      .i_dmem_rdata (i_dmem_rdata),
+      .i_dmem_rready(i_dmem_rready),
+      .o_dmem_waddr (o_dmem_waddr),
+      .o_dmem_wvalid(o_dmem_wvalid),
+      .o_dmem_wstrb (o_dmem_wstrb),
+      .o_dmem_wdata (o_dmem_wdata),
+      .i_dmem_wready(i_dmem_wready),
+      .o_trap       (o_trap)
+  );
 
-         $display("==================================================");
-      end
-   end
+  integer cycle_count;
+  integer max_cycles;
+  integer i;
 
-   // --- Simulation Control ---
-   initial begin
-      // Optional: Dump waves for GTKWave
-      // $dumpfile("nyan.vcd"); $dumpvars(0, nyan_core_tb);
+  initial begin
+    if ($test$plusargs("dump")) begin
+      $dumpfile("nyanrv_tb.vcd");
+      $dumpvars(0, nyanrv_tb);
+    end
+  end
 
-      $readmemh("imem.hex", mem);
-      rst_n = 0; 
-      #20 rst_n = 1;
+  initial begin
+    max_cycles  = 100_000;
+    cycle_count = 0;
+    for (i = 0; i < IMEM_WORDS; i = i + 1) imem[i] = 32'h0000_0013;  // nop
+    for (i = 0; i < DMEM_WORDS; i = i + 1) dmem[i] = 32'b0;
 
-      // Fork to handle either success or timeout
-      fork
-         begin
-            wait(trap || uut.X[31] == 32'h666);
-            #20;
-            if (trap && uut.X[31] != 32'h666) begin
-               $display("\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-               $display("TORTURE FAILED: CPU Trapped at PC=%h", uut.pc);
-               $display("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
-            end else begin
-               $display("\n*******************************");
-               $display("TORTURE PASSED! Final Flag: %h", uut.X[31]);
-               $display("*******************************\n");
-            end
-         end
-         begin
-            #200000; // Timeout after 200us
-            $display("TIMEOUT: Simulation took too long!");
-         end
-      join_any
+    $display("Loading instruction memory from imem.hex");
+    $readmemh("imem.hex", imem);
 
-      $finish;
-   end
+    i_rst_n = 0;
+    repeat (4) #20;
+    i_rst_n = 1;
+    #20;
 
-endmodule // nyanrv_tb
+    $display("Running CPU (max %0d cycles)...", max_cycles);
+    while (!o_trap && cycle_count < max_cycles) begin
+      #20;
+      cycle_count = cycle_count + 1;
+    end
+
+    if (o_trap) begin
+      $display("Trap asserted after %0d cycles.", cycle_count);
+    end else begin
+      $display("WARNING: No trap after %0d cycles; stopping.", max_cycles);
+    end
+
+    // Self-check: all tests write 1 at RESULT_ADDR (dmem[0]) on pass, 0 on fail
+    if (dmem[0] == 32'd1) $display("PASS");
+    else $display("FAIL: dmem[0] == %0d (expected 1)", dmem[0]);
+
+    $display("Test done.");
+    $finish;
+  end
+
+endmodule
