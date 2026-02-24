@@ -158,6 +158,79 @@ module nyanrv (
   wire [31:0] load_addr_full = X[rs1] + imm_I;
   wire [31:0] store_addr_full = X[rs1] + imm_S;
 
+  wire insn_lui_q = { opcode_q } == { 7'b0110111 },
+  insn_auipc_q = { opcode_q } == { 7'b0010111 },
+  insn_jal_q = { opcode_q } == { 7'b1101111 },
+  insn_jalr_q = { opcode_q, f3_q } == { 7'b1100111, 3'b000 },
+
+  insn_beq_q = { opcode_q, f3_q } == { 7'b1100011, 3'b000 },
+  insn_bne_q = { opcode_q, f3_q } == { 7'b1100011, 3'b001 },
+  insn_blt_q = { opcode_q, f3_q } == { 7'b1100011, 3'b100 },
+  insn_bge_q = { opcode_q, f3_q } == { 7'b1100011, 3'b101 },
+  insn_bltu_q = { opcode_q, f3_q } == { 7'b1100011, 3'b110 },
+  insn_bgeu_q = { opcode_q, f3_q } == { 7'b1100011, 3'b111 },
+
+  insn_lb_q = { opcode_q, f3_q } == { 7'b0000011, 3'b000 },
+  insn_lh_q = { opcode_q, f3_q } == { 7'b0000011, 3'b001 },
+  insn_lw_q = { opcode_q, f3_q } == { 7'b0000011, 3'b010 },
+  insn_lbu_q = { opcode_q, f3_q } == { 7'b0000011, 3'b100 },
+  insn_lhu_q = { opcode_q, f3_q } == { 7'b0000011, 3'b101 },
+
+  insn_sb_q = { opcode_q, f3_q } == { 7'b0100011, 3'b000 },
+  insn_sh_q = { opcode_q, f3_q } == { 7'b0100011, 3'b001 },
+  insn_sw_q = { opcode_q, f3_q } == { 7'b0100011, 3'b010 },
+
+  insn_addi_q = { opcode_q, f3_q } == { 7'b0010011, 3'b000 },
+  insn_slti_q = { opcode_q, f3_q } == { 7'b0010011, 3'b010 },
+  insn_sltiu_q = { opcode_q, f3_q } == { 7'b0010011, 3'b011 },
+  insn_xori_q   = { opcode_q, f3_q } == { 7'b0010011, 3'b100 },
+  insn_ori_q    = { opcode_q, f3_q } == { 7'b0010011, 3'b110 },
+  insn_andi_q   = { opcode_q, f3_q } == { 7'b0010011, 3'b111 },
+
+  insn_slli_q   = { opcode_q, f3_q, f7_q } == { 7'b0010011, 3'b001, 7'b0000000 },
+  insn_srli_q   = { opcode_q, f3_q, f7_q } == { 7'b0010011, 3'b101, 7'b0000000 },
+  insn_srai_q   = { opcode_q, f3_q, f7_q } == { 7'b0010011, 3'b101, 7'b0100000 },
+
+  insn_add_q    = { opcode_q, f3_q, f7_q } == { 7'b0110011, 3'b000, 7'b0000000 },
+  insn_sub_q    = { opcode_q, f3_q, f7_q } == { 7'b0110011, 3'b000, 7'b0100000 },
+  insn_sll_q    = { opcode_q, f3_q, f7_q } == { 7'b0110011, 3'b001, 7'b0000000 },
+  insn_slt_q    = { opcode_q, f3_q, f7_q } == { 7'b0110011, 3'b010, 7'b0000000 },
+  insn_sltu_q   = { opcode_q, f3_q, f7_q } == { 7'b0110011, 3'b011, 7'b0000000 },
+  insn_xor_q    = { opcode_q, f3_q, f7_q } == { 7'b0110011, 3'b100, 7'b0000000 },
+  insn_srl_q    = { opcode_q, f3_q, f7_q } == { 7'b0110011, 3'b101, 7'b0000000 },
+  insn_sra_q    = { opcode_q, f3_q, f7_q } == { 7'b0110011, 3'b101, 7'b0100000 },
+  insn_or_q     = { opcode_q, f3_q, f7_q } == { 7'b0110011, 3'b110, 7'b0000000 },
+  insn_and_q    = { opcode_q, f3_q, f7_q } == { 7'b0110011, 3'b111, 7'b0000000 },
+
+  insn_fence_q  = { opcode_q } == { 7'b0001111 },
+  insn_ecall_q  = { opcode_q, f3_q, insn_q[31:20] } == { 7'b1110011, 3'b000, 12'b000000000000 },
+  insn_ebreak_q = { opcode_q, f3_q, insn_q[31:20] } == { 7'b1110011, 3'b000, 12'b000000000001 },
+  insn_mret_q = { opcode_q, f3_q, insn_q[31:20] }   == { 7'b1110011, 3'b000, 12'b001100000010 },
+
+  // System
+  insn_csrrw_q = { opcode_q, f3_q } == { 7'b1110011, 3'b001 },
+  insn_csrrs_q = { opcode_q, f3_q } == { 7'b1110011, 3'b010 },
+  insn_csrrc_q = { opcode_q, f3_q } == { 7'b1110011, 3'b011 },
+  insn_csrrwi_q = { opcode_q, f3_q } == { 7'b1110011, 3'b101 },
+  insn_csrrsi_q = { opcode_q, f3_q } == { 7'b1110011, 3'b110 },
+  insn_csrrci_q = { opcode_q, f3_q } == { 7'b1110011, 3'b111 };
+
+  reg write_rd;
+  reg [31:0] pc_next;
+  reg [31:0] rs1_val, rs2_val, rd_val;
+  reg  [31:0] jalr_target;
+  reg  [ 4:0] shamt;
+
+  wire [11:0] csr_addr = insn_q[31:20];
+  reg [3:0] csr_rs, csr_rd;
+  reg [31:0] csr_rd_val;
+  reg        write_csr_rd;
+
+  // Forwarding: latch last write from execute so next instruction can bypass
+  reg [ 4:0] rd_prev_q;
+  reg [31:0] rd_val_prev;
+  reg        write_rd_prev;
+
   integer reg_idx;
   always @(posedge i_clk) begin
     if (!i_rst_n) begin
@@ -301,79 +374,6 @@ module nyanrv (
       endcase  // case (cpu_state)
     end
   end  // always @ (posedge i_clk)
-
-  wire insn_lui_q = { opcode_q } == { 7'b0110111 },
-  insn_auipc_q = { opcode_q } == { 7'b0010111 },
-  insn_jal_q = { opcode_q } == { 7'b1101111 },
-  insn_jalr_q = { opcode_q, f3_q } == { 7'b1100111, 3'b000 },
-
-  insn_beq_q = { opcode_q, f3_q } == { 7'b1100011, 3'b000 },
-  insn_bne_q = { opcode_q, f3_q } == { 7'b1100011, 3'b001 },
-  insn_blt_q = { opcode_q, f3_q } == { 7'b1100011, 3'b100 },
-  insn_bge_q = { opcode_q, f3_q } == { 7'b1100011, 3'b101 },
-  insn_bltu_q = { opcode_q, f3_q } == { 7'b1100011, 3'b110 },
-  insn_bgeu_q = { opcode_q, f3_q } == { 7'b1100011, 3'b111 },
-
-  insn_lb_q = { opcode_q, f3_q } == { 7'b0000011, 3'b000 },
-  insn_lh_q = { opcode_q, f3_q } == { 7'b0000011, 3'b001 },
-  insn_lw_q = { opcode_q, f3_q } == { 7'b0000011, 3'b010 },
-  insn_lbu_q = { opcode_q, f3_q } == { 7'b0000011, 3'b100 },
-  insn_lhu_q = { opcode_q, f3_q } == { 7'b0000011, 3'b101 },
-
-  insn_sb_q = { opcode_q, f3_q } == { 7'b0100011, 3'b000 },
-  insn_sh_q = { opcode_q, f3_q } == { 7'b0100011, 3'b001 },
-  insn_sw_q = { opcode_q, f3_q } == { 7'b0100011, 3'b010 },
-
-  insn_addi_q = { opcode_q, f3_q } == { 7'b0010011, 3'b000 },
-  insn_slti_q = { opcode_q, f3_q } == { 7'b0010011, 3'b010 },
-  insn_sltiu_q = { opcode_q, f3_q } == { 7'b0010011, 3'b011 },
-  insn_xori_q   = { opcode_q, f3_q } == { 7'b0010011, 3'b100 },
-  insn_ori_q    = { opcode_q, f3_q } == { 7'b0010011, 3'b110 },
-  insn_andi_q   = { opcode_q, f3_q } == { 7'b0010011, 3'b111 },
-
-  insn_slli_q   = { opcode_q, f3_q, f7_q } == { 7'b0010011, 3'b001, 7'b0000000 },
-  insn_srli_q   = { opcode_q, f3_q, f7_q } == { 7'b0010011, 3'b101, 7'b0000000 },
-  insn_srai_q   = { opcode_q, f3_q, f7_q } == { 7'b0010011, 3'b101, 7'b0100000 },
-
-  insn_add_q    = { opcode_q, f3_q, f7_q } == { 7'b0110011, 3'b000, 7'b0000000 },
-  insn_sub_q    = { opcode_q, f3_q, f7_q } == { 7'b0110011, 3'b000, 7'b0100000 },
-  insn_sll_q    = { opcode_q, f3_q, f7_q } == { 7'b0110011, 3'b001, 7'b0000000 },
-  insn_slt_q    = { opcode_q, f3_q, f7_q } == { 7'b0110011, 3'b010, 7'b0000000 },
-  insn_sltu_q   = { opcode_q, f3_q, f7_q } == { 7'b0110011, 3'b011, 7'b0000000 },
-  insn_xor_q    = { opcode_q, f3_q, f7_q } == { 7'b0110011, 3'b100, 7'b0000000 },
-  insn_srl_q    = { opcode_q, f3_q, f7_q } == { 7'b0110011, 3'b101, 7'b0000000 },
-  insn_sra_q    = { opcode_q, f3_q, f7_q } == { 7'b0110011, 3'b101, 7'b0100000 },
-  insn_or_q     = { opcode_q, f3_q, f7_q } == { 7'b0110011, 3'b110, 7'b0000000 },
-  insn_and_q    = { opcode_q, f3_q, f7_q } == { 7'b0110011, 3'b111, 7'b0000000 },
-
-  insn_fence_q  = { opcode_q } == { 7'b0001111 },
-  insn_ecall_q  = { opcode_q, f3_q, insn_q[31:20] } == { 7'b1110011, 3'b000, 12'b000000000000 },
-  insn_ebreak_q = { opcode_q, f3_q, insn_q[31:20] } == { 7'b1110011, 3'b000, 12'b000000000001 },
-  insn_mret_q = { opcode_q, f3_q, insn_q[31:20] }   == { 7'b1110011, 3'b000, 12'b001100000010 },
-
-  // System
-  insn_csrrw_q = { opcode_q, f3_q } == { 7'b1110011, 3'b001 },
-  insn_csrrs_q = { opcode_q, f3_q } == { 7'b1110011, 3'b010 },
-  insn_csrrc_q = { opcode_q, f3_q } == { 7'b1110011, 3'b011 },
-  insn_csrrwi_q = { opcode_q, f3_q } == { 7'b1110011, 3'b101 },
-  insn_csrrsi_q = { opcode_q, f3_q } == { 7'b1110011, 3'b110 },
-  insn_csrrci_q = { opcode_q, f3_q } == { 7'b1110011, 3'b111 };
-
-  reg write_rd;
-  reg [31:0] pc_next;
-  reg [31:0] rs1_val, rs2_val, rd_val;
-  reg  [31:0] jalr_target;
-  reg  [ 4:0] shamt;
-
-  wire [11:0] csr_addr = insn_q[31:20];
-  reg [3:0] csr_rs, csr_rd;
-  reg [31:0] csr_rd_val;
-  reg        write_csr_rd;
-
-  // Forwarding: latch last write from execute so next instruction can bypass
-  reg [ 4:0] rd_prev_q;
-  reg [31:0] rd_val_prev;
-  reg        write_rd_prev;
 
   always @(*) begin
     trap = 1'b0;
