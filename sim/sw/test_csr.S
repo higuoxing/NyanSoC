@@ -1,17 +1,17 @@
 /* test_csr.S
  * Tests CSR instructions: CSRRW, CSRRS, CSRRC, CSRRWI, CSRRSI, CSRRCI.
  *
- * NyanSoC CSR address map (note: some addresses deviate from RISC-V spec):
+ * NyanSoC CSR address map:
  *   0x300 mstatus   (standard)
- *   0x301 mnstatus  (non-standard; spec has misa here)
- *   0x302 misa      (non-standard; spec has medeleg here)
- *   0x303 mie       (non-standard; spec has mideleg here)
+ *   0x301 misa      (standard)
+ *   0x304 mie       (standard)
  *   0x305 mtvec     (standard)
  *   0x340 mscratch  (standard)
  *   0x341 mepc      (standard)
  *   0x342 mcause    (standard)
  *   0x343 mtval     (standard)
  *   0x344 mip       (standard)
+ *   0x744 mnstatus  (Smrnmi extension)
  *   0xF14 mhartid   (standard)
  *
  * We use .word to hand-encode CSR instructions for non-standard addresses,
@@ -54,8 +54,8 @@
 
 /* NyanSoC CSR addresses */
 .equ CSR_MSTATUS,  0x300
-.equ CSR_MISA,     0x302   /* NyanSoC-specific; standard address is 0x301 */
-.equ CSR_MIE,      0x303   /* NyanSoC-specific; standard address is 0x304 */
+.equ CSR_MISA,     0x301
+.equ CSR_MIE,      0x304
 .equ CSR_MTVEC,    0x305
 .equ CSR_MSCRATCH, 0x340
 .equ CSR_MEPC,     0x341

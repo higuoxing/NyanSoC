@@ -512,16 +512,16 @@ module nyanrv (
           csr_rd = mstatus;
         end
         12'h301: begin
-          csr_rs = mnstatus;
-          csr_rd = mnstatus;
-        end
-        12'h302: begin
           csr_rs = misa;
           csr_rd = misa;
         end
-        12'h303: begin
+        12'h304: begin
           csr_rs = mie;
           csr_rd = mie;
+        end
+        12'h744: begin
+          csr_rs = mnstatus;
+          csr_rd = mnstatus;
         end
         12'h305: begin
           csr_rs = mtvec;
