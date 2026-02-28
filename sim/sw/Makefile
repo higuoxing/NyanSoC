@@ -13,7 +13,7 @@
 #   make clean        - remove all build artifacts
 ##############################################################################
 
-CROSS   := riscv32-unknown-elf
+CROSS   := riscv64-elf
 CC      := $(CROSS)-gcc
 AS      := $(CROSS)-gcc
 LD      := $(CROSS)-gcc
@@ -27,9 +27,10 @@ LDFLAGS  := -T link.ld -march=rv32i_zicsr -mabi=ilp32 -nostartfiles -nostdlib \
              -Wl,--no-relax
 
 # Simulation sources (relative to repository root)
-REPO_ROOT := ../..
-TB        := $(REPO_ROOT)/rtl/nyanrv_tb.v
-RTL       := $(REPO_ROOT)/rtl/nyanrv.v
+PROJ_ROOT := ../..
+TB        := $(PROJ_ROOT)/rtl/nyanrv_tb.v
+RTL       := $(PROJ_ROOT)/rtl/nyanrv.v
+ASM_DIR   := asm
 
 TESTS := test_alu test_branch test_mem test_jump test_csr
 
@@ -46,8 +47,8 @@ all: run
 build: $(addsuffix .hex, $(TESTS))
 
 # Each test links crt0.S + the test .S -> ELF -> stripped binary -> hex
-%.elf: crt0.S %.S link.ld
-	$(AS) $(ASFLAGS) $(LDFLAGS) -o $@ crt0.S $*.S
+%.elf: $(ASM_DIR)/crt0.S $(ASM_DIR)/%.S link.ld
+	$(AS) $(ASFLAGS) $(LDFLAGS) -o $@ $(ASM_DIR)/crt0.S $(ASM_DIR)/$*.S
 
 %.hex: %.elf
 	$(OBJCOPY) -O verilog --verilog-data-width=4 \
