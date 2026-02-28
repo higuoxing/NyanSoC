@@ -8,7 +8,7 @@
 #   make cover       - run the cover check
 #   make clean       - remove generated checks directory
 #
-# On a fresh clone, run `make setup` once before `make prove`.
+# `make prove` and `make cover` automatically run setup if needed.
 ##############################################################################
 
 CORE      := nyanrv
@@ -36,7 +36,7 @@ sync:
 	$(foreach f,$(CORE_FILES),cp $(SRCDIR)/$(f) $(COREDIR)/$(f);)
 
 .PHONY: genchecks
-genchecks: sync
+genchecks: setup
 	cd $(COREDIR) && python3 ../../checks/genchecks.py
 
 $(CHECKSDIR)/makefile: genchecks
