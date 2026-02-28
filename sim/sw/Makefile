@@ -32,7 +32,8 @@ TB        := $(PROJ_ROOT)/sim/rtl/nyanrv_tb.v
 RTL       := $(PROJ_ROOT)/rtl/nyanrv.v
 ASM_DIR   := asm
 
-TESTS := test_alu test_branch test_mem test_jump test_csr
+TESTS     := test_alu test_branch test_mem test_jump test_csr
+IRQ_TB    := $(PROJ_ROOT)/sim/rtl/nyanrv_irq_tb.v
 
 # Keep intermediate ELF files on build errors for easier debugging
 .PRECIOUS: %.elf
@@ -93,6 +94,23 @@ $(TESTS): %: %.hex nyanrv_tb.vvp
 	    echo "PASS  $*"; \
 	else \
 	    echo "FAIL  $*"; \
+	    echo "$$result" | sed 's/^/      /'; \
+	    exit 1; \
+	fi
+
+# ── IRQ test (uses its own testbench with interrupt stimulus) ─────────────────
+
+nyanrv_irq_tb.vvp: $(IRQ_TB) $(RTL)
+	iverilog -g2012 -o $@ $(RTL) $(IRQ_TB)
+
+.PHONY: test_irq
+test_irq: test_irq.hex nyanrv_irq_tb.vvp
+	@cp test_irq.hex imem.hex
+	@result=$$(vvp nyanrv_irq_tb.vvp 2>&1); \
+	if echo "$$result" | grep -q "^PASS"; then \
+	    echo "PASS  test_irq"; \
+	else \
+	    echo "FAIL  test_irq"; \
 	    echo "$$result" | sed 's/^/      /'; \
 	    exit 1; \
 	fi

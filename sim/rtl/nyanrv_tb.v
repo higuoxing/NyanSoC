@@ -27,6 +27,8 @@ module nyanrv_tb;
   wire        i_dmem_wready;
 
   wire        o_trap;
+  reg         i_irq_timer;
+  reg         i_irq_external;
 
   // Instruction and data memories (word-addressed for indexing)
   reg  [31:0] imem          [0:IMEM_WORDS-1];
@@ -78,6 +80,8 @@ module nyanrv_tb;
       .o_dmem_wstrb (o_dmem_wstrb),
       .o_dmem_wdata (o_dmem_wdata),
       .i_dmem_wready(i_dmem_wready),
+      .i_irq_timer   (i_irq_timer),
+      .i_irq_external(i_irq_external),
       .o_trap       (o_trap)
   );
 
@@ -101,6 +105,8 @@ module nyanrv_tb;
     $display("Loading instruction memory from imem.hex");
     $readmemh("imem.hex", imem);
 
+    i_irq_timer    = 0;
+    i_irq_external = 0;
     i_rst_n = 0;
     repeat (4) #20;
     i_rst_n = 1;

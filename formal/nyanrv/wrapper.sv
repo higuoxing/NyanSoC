@@ -61,6 +61,9 @@ module rvfi_wrapper (
         .o_dmem_wdata (o_dmem_wdata),
         .i_dmem_wready(1'b1),
 
+        .i_irq_timer   (1'b0),
+        .i_irq_external(1'b0),
+
         .o_trap(o_trap),
 
         `RVFI_CONN
