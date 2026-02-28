@@ -31,8 +31,8 @@ module nyanrv_tb;
   reg         i_irq_external;
 
   // Instruction and data memories (word-addressed for indexing)
-  reg  [31:0] imem          [0:IMEM_WORDS-1];
-  reg  [31:0] dmem          [0:DMEM_WORDS-1];
+  reg  [31:0] imem           [0:IMEM_WORDS-1];
+  reg  [31:0] dmem           [0:DMEM_WORDS-1];
 
   // Clock
   initial i_clk = 0;
@@ -65,24 +65,24 @@ module nyanrv_tb;
   assign i_dmem_wready = o_dmem_wvalid;  // accept store same cycle
 
   nyanrv u_dut (
-      .i_clk        (i_clk),
-      .i_rst_n      (i_rst_n),
-      .o_imem_addr  (o_imem_addr),
-      .o_imem_valid (o_imem_valid),
-      .i_imem_rdata (i_imem_rdata),
-      .i_imem_ready (i_imem_ready),
-      .o_dmem_raddr (o_dmem_raddr),
-      .o_dmem_rvalid(o_dmem_rvalid),
-      .i_dmem_rdata (i_dmem_rdata),
-      .i_dmem_rready(i_dmem_rready),
-      .o_dmem_waddr (o_dmem_waddr),
-      .o_dmem_wvalid(o_dmem_wvalid),
-      .o_dmem_wstrb (o_dmem_wstrb),
-      .o_dmem_wdata (o_dmem_wdata),
-      .i_dmem_wready(i_dmem_wready),
+      .i_clk         (i_clk),
+      .i_rst_n       (i_rst_n),
+      .o_imem_addr   (o_imem_addr),
+      .o_imem_valid  (o_imem_valid),
+      .i_imem_rdata  (i_imem_rdata),
+      .i_imem_ready  (i_imem_ready),
+      .o_dmem_raddr  (o_dmem_raddr),
+      .o_dmem_rvalid (o_dmem_rvalid),
+      .i_dmem_rdata  (i_dmem_rdata),
+      .i_dmem_rready (i_dmem_rready),
+      .o_dmem_waddr  (o_dmem_waddr),
+      .o_dmem_wvalid (o_dmem_wvalid),
+      .o_dmem_wstrb  (o_dmem_wstrb),
+      .o_dmem_wdata  (o_dmem_wdata),
+      .i_dmem_wready (i_dmem_wready),
       .i_irq_timer   (i_irq_timer),
       .i_irq_external(i_irq_external),
-      .o_trap       (o_trap)
+      .o_trap        (o_trap)
   );
 
   integer cycle_count;

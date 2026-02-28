@@ -24,20 +24,20 @@
 
 module nyanrv_irq_tb;
 
-  parameter IMEM_WORDS      = 1024;
-  parameter DMEM_WORDS      = 1024;
-  parameter IMEM_ADDR_BITS  = 10;
-  parameter DMEM_ADDR_BITS  = 10;
+  parameter IMEM_WORDS = 1024;
+  parameter DMEM_WORDS = 1024;
+  parameter IMEM_ADDR_BITS = 10;
+  parameter DMEM_ADDR_BITS = 10;
 
   // Cycles after reset-release before asserting the first IRQ.
   // The CPU must execute: la mtvec, csrw mie, csrsi mstatus (~6 insns × 2 cycles).
   parameter IRQ_DELAY_CYCLES = 40;
   // Maximum cycles to wait for each IRQ to be acknowledged.
-  parameter IRQ_ACK_TIMEOUT  = 500;
+  parameter IRQ_ACK_TIMEOUT = 500;
   // Gap (cycles) between the two IRQs.
-  parameter IRQ_GAP_CYCLES   = 20;
+  parameter IRQ_GAP_CYCLES = 20;
   // Overall simulation timeout.
-  parameter MAX_CYCLES       = 50_000;
+  parameter MAX_CYCLES = 50_000;
 
   reg         i_clk;
   reg         i_rst_n;
@@ -62,8 +62,8 @@ module nyanrv_irq_tb;
   reg         i_irq_external;
   wire        o_trap;
 
-  reg  [31:0] imem [0:IMEM_WORDS-1];
-  reg  [31:0] dmem [0:DMEM_WORDS-1];
+  reg  [31:0] imem           [0:IMEM_WORDS-1];
+  reg  [31:0] dmem           [0:DMEM_WORDS-1];
 
   // 10 ns clock
   initial i_clk = 0;
@@ -72,24 +72,22 @@ module nyanrv_irq_tb;
   // Instruction memory — combinational, always ready
   wire [IMEM_ADDR_BITS-1:0] imem_idx = o_imem_addr[IMEM_ADDR_BITS+1:2];
   always @(*) begin
-    i_imem_rdata = (o_imem_valid && imem_idx < IMEM_WORDS) ?
-                   imem[imem_idx] : 32'h0000_0013;
+    i_imem_rdata = (o_imem_valid && imem_idx < IMEM_WORDS) ? imem[imem_idx] : 32'h0000_0013;
     i_imem_ready = o_imem_valid;
   end
 
   // Data memory — combinational read, synchronous write
   wire [DMEM_ADDR_BITS-1:0] dmem_raddr_idx = o_dmem_raddr[DMEM_ADDR_BITS+1:2];
   always @(*) begin
-    i_dmem_rdata  = (o_dmem_rvalid && dmem_raddr_idx < DMEM_WORDS) ?
-                    dmem[dmem_raddr_idx] : 32'b0;
+    i_dmem_rdata  = (o_dmem_rvalid && dmem_raddr_idx < DMEM_WORDS) ? dmem[dmem_raddr_idx] : 32'b0;
     i_dmem_rready = o_dmem_rvalid;
   end
 
   wire [DMEM_ADDR_BITS-1:0] dmem_waddr_idx = o_dmem_waddr[DMEM_ADDR_BITS+1:2];
   always @(posedge i_clk) begin
     if (o_dmem_wvalid && dmem_waddr_idx < DMEM_WORDS) begin
-      if (o_dmem_wstrb[0]) dmem[dmem_waddr_idx][7:0]   <= o_dmem_wdata[7:0];
-      if (o_dmem_wstrb[1]) dmem[dmem_waddr_idx][15:8]  <= o_dmem_wdata[15:8];
+      if (o_dmem_wstrb[0]) dmem[dmem_waddr_idx][7:0] <= o_dmem_wdata[7:0];
+      if (o_dmem_wstrb[1]) dmem[dmem_waddr_idx][15:8] <= o_dmem_wdata[15:8];
       if (o_dmem_wstrb[2]) dmem[dmem_waddr_idx][23:16] <= o_dmem_wdata[23:16];
       if (o_dmem_wstrb[3]) dmem[dmem_waddr_idx][31:24] <= o_dmem_wdata[31:24];
     end
@@ -97,21 +95,21 @@ module nyanrv_irq_tb;
   assign i_dmem_wready = o_dmem_wvalid;
 
   nyanrv u_dut (
-      .i_clk        (i_clk),
-      .i_rst_n      (i_rst_n),
-      .o_imem_addr  (o_imem_addr),
-      .o_imem_valid (o_imem_valid),
-      .i_imem_rdata (i_imem_rdata),
-      .i_imem_ready (i_imem_ready),
-      .o_dmem_raddr (o_dmem_raddr),
-      .o_dmem_rvalid(o_dmem_rvalid),
-      .i_dmem_rdata (i_dmem_rdata),
-      .i_dmem_rready(i_dmem_rready),
-      .o_dmem_waddr (o_dmem_waddr),
-      .o_dmem_wvalid(o_dmem_wvalid),
-      .o_dmem_wstrb (o_dmem_wstrb),
-      .o_dmem_wdata (o_dmem_wdata),
-      .i_dmem_wready(i_dmem_wready),
+      .i_clk         (i_clk),
+      .i_rst_n       (i_rst_n),
+      .o_imem_addr   (o_imem_addr),
+      .o_imem_valid  (o_imem_valid),
+      .i_imem_rdata  (i_imem_rdata),
+      .i_imem_ready  (i_imem_ready),
+      .o_dmem_raddr  (o_dmem_raddr),
+      .o_dmem_rvalid (o_dmem_rvalid),
+      .i_dmem_rdata  (i_dmem_rdata),
+      .i_dmem_rready (i_dmem_rready),
+      .o_dmem_waddr  (o_dmem_waddr),
+      .o_dmem_wvalid (o_dmem_wvalid),
+      .o_dmem_wstrb  (o_dmem_wstrb),
+      .o_dmem_wdata  (o_dmem_wdata),
+      .i_dmem_wready (i_dmem_wready),
       .i_irq_timer   (i_irq_timer),
       .i_irq_external(i_irq_external),
       .o_trap        (o_trap)
@@ -125,8 +123,7 @@ module nyanrv_irq_tb;
     input integer n;
     integer k;
     begin
-      for (k = 0; k < n; k = k + 1)
-        @(posedge i_clk);
+      for (k = 0; k < n; k = k + 1) @(posedge i_clk);
     end
   endtask
 
@@ -166,8 +163,8 @@ module nyanrv_irq_tb;
     i_irq_external = 0;
     if (timeout == 0) begin
       $display("TIMEOUT waiting for MEI acknowledgement");
-      $display("FAIL: dmem[0]=%0d irq_count=%0d cause0=0x%08x cause1=0x%08x",
-               dmem[0], dmem[1], dmem[2], dmem[3]);
+      $display("FAIL: dmem[0]=%0d irq_count=%0d cause0=0x%08x cause1=0x%08x", dmem[0], dmem[1],
+               dmem[2], dmem[3]);
       $finish;
     end
 
@@ -185,8 +182,8 @@ module nyanrv_irq_tb;
     i_irq_timer = 0;
     if (timeout == 0) begin
       $display("TIMEOUT waiting for MTI acknowledgement");
-      $display("FAIL: dmem[0]=%0d irq_count=%0d cause0=0x%08x cause1=0x%08x",
-               dmem[0], dmem[1], dmem[2], dmem[3]);
+      $display("FAIL: dmem[0]=%0d irq_count=%0d cause0=0x%08x cause1=0x%08x", dmem[0], dmem[1],
+               dmem[2], dmem[3]);
       $finish;
     end
 
@@ -203,14 +200,17 @@ module nyanrv_irq_tb;
       cycle_count = cycle_count + 1;
     end
 
-    if (!o_trap)
-      $display("WARNING: No trap after %0d cycles total.", cycle_count);
+    if (!o_trap) $display("WARNING: No trap after %0d cycles total.", cycle_count);
 
-    if (dmem[0] == 32'd1)
-      $display("PASS");
+    if (dmem[0] == 32'd1) $display("PASS");
     else
-      $display("FAIL: dmem[0]=%0d irq_count=%0d cause0=0x%08x cause1=0x%08x",
-               dmem[0], dmem[1], dmem[2], dmem[3]);
+      $display(
+          "FAIL: dmem[0]=%0d irq_count=%0d cause0=0x%08x cause1=0x%08x",
+          dmem[0],
+          dmem[1],
+          dmem[2],
+          dmem[3]
+      );
     $finish;
   end
 
