@@ -28,7 +28,7 @@ LDFLAGS  := -T link.ld -march=rv32i_zicsr -mabi=ilp32 -nostartfiles -nostdlib \
 
 # Simulation sources (relative to repository root)
 PROJ_ROOT := ../..
-TB        := $(PROJ_ROOT)/rtl/nyanrv_tb.v
+TB        := $(PROJ_ROOT)/sim/rtl/nyanrv_tb.v
 RTL       := $(PROJ_ROOT)/rtl/nyanrv.v
 ASM_DIR   := asm
 

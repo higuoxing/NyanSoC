@@ -68,8 +68,70 @@ module nyanrv (
     // }}
 
     output reg o_trap
+
+`ifdef RISCV_FORMAL
+    // RVFI outputs
+    // {{
+    ,output reg        rvfi_valid
+    ,output reg [63:0] rvfi_order
+    ,output reg [31:0] rvfi_insn
+    ,output reg        rvfi_trap
+    ,output reg        rvfi_halt
+    ,output reg        rvfi_intr
+    ,output reg [ 1:0] rvfi_mode
+    ,output reg [ 1:0] rvfi_ixl
+
+    ,output reg [ 4:0] rvfi_rs1_addr
+    ,output reg [ 4:0] rvfi_rs2_addr
+    ,output reg [31:0] rvfi_rs1_rdata
+    ,output reg [31:0] rvfi_rs2_rdata
+    ,output reg [ 4:0] rvfi_rd_addr
+    ,output reg [31:0] rvfi_rd_wdata
+
+    ,output reg [31:0] rvfi_pc_rdata
+    ,output reg [31:0] rvfi_pc_wdata
+
+    ,output reg [31:0] rvfi_mem_addr
+    ,output reg [ 3:0] rvfi_mem_rmask
+    ,output reg [ 3:0] rvfi_mem_wmask
+    ,output reg [31:0] rvfi_mem_rdata
+    ,output reg [31:0] rvfi_mem_wdata
+
+    // CSR ports
+    ,output reg [31:0] rvfi_csr_mstatus_rmask
+    ,output reg [31:0] rvfi_csr_mstatus_wmask
+    ,output reg [31:0] rvfi_csr_mstatus_rdata
+    ,output reg [31:0] rvfi_csr_mstatus_wdata
+
+    ,output reg [31:0] rvfi_csr_mtvec_rmask
+    ,output reg [31:0] rvfi_csr_mtvec_wmask
+    ,output reg [31:0] rvfi_csr_mtvec_rdata
+    ,output reg [31:0] rvfi_csr_mtvec_wdata
+
+    ,output reg [31:0] rvfi_csr_mscratch_rmask
+    ,output reg [31:0] rvfi_csr_mscratch_wmask
+    ,output reg [31:0] rvfi_csr_mscratch_rdata
+    ,output reg [31:0] rvfi_csr_mscratch_wdata
+
+    ,output reg [31:0] rvfi_csr_mepc_rmask
+    ,output reg [31:0] rvfi_csr_mepc_wmask
+    ,output reg [31:0] rvfi_csr_mepc_rdata
+    ,output reg [31:0] rvfi_csr_mepc_wdata
+
+    ,output reg [31:0] rvfi_csr_mcause_rmask
+    ,output reg [31:0] rvfi_csr_mcause_wmask
+    ,output reg [31:0] rvfi_csr_mcause_rdata
+    ,output reg [31:0] rvfi_csr_mcause_wdata
+
+    ,output reg [31:0] rvfi_csr_mtval_rmask
+    ,output reg [31:0] rvfi_csr_mtval_wmask
+    ,output reg [31:0] rvfi_csr_mtval_rdata
+    ,output reg [31:0] rvfi_csr_mtval_wdata
+    // }}
+`endif
 );
   reg trap;
+  reg [31:0] trap_cause;  // mcause value for execute-state traps
 
   // Registers {{
   reg [31:0] pc;
@@ -131,6 +193,7 @@ module nyanrv (
 
   reg [31:0] load_eff_addr_q;
   reg [31:0] store_eff_addr_q;
+  reg        mem_align_trap;    // set in fetch when load/store address is misaligned
 
   // IMEM {{
   assign o_imem_addr  = pc;
@@ -231,6 +294,28 @@ module nyanrv (
   reg [31:0] rd_val_prev;
   reg        write_rd_prev;
 
+`ifdef RISCV_FORMAL
+  // RVFI internal state
+  reg [63:0] rvfi_order_cnt;
+  // Latch pre-execution register values and memory data for RVFI reporting
+  reg [31:0] rvfi_rs1_rdata_q;
+  reg [31:0] rvfi_rs2_rdata_q;
+  reg [31:0] rvfi_mem_rdata_q;
+  reg [31:0] rvfi_mem_wdata_q;
+  reg [31:0] rvfi_mem_addr_q;
+  reg [ 3:0] rvfi_mem_rmask_q;
+  reg [ 3:0] rvfi_mem_wmask_q;
+  // Latch pre-execution CSR values
+  reg [31:0] rvfi_csr_mstatus_pre;
+  reg [31:0] rvfi_csr_mtvec_pre;
+  reg [31:0] rvfi_csr_mscratch_pre;
+  reg [31:0] rvfi_csr_mepc_pre;
+  reg [31:0] rvfi_csr_mcause_pre;
+  reg [31:0] rvfi_csr_mtval_pre;
+  // Track intr (first insn of trap handler)
+  reg        rvfi_intr_q;
+`endif
+
   integer reg_idx;
   always @(posedge i_clk) begin
     if (!i_rst_n) begin
@@ -238,10 +323,25 @@ module nyanrv (
       cpu_state <= cpu_state_fetch;
       pc <= 32'b0;
       write_rd_prev <= 1'b0;
+      mem_align_trap <= 1'b0;
       for (reg_idx = 0; reg_idx < 32; reg_idx = reg_idx + 1) X[reg_idx] <= 32'b0;
       for (reg_idx = 0; reg_idx < mcsr_max; reg_idx = reg_idx + 1)
       CSR[reg_idx] <= (reg_idx == misa) ? 32'h4000_0100 : 32'b0;  // RV32I in misa
+`ifdef RISCV_FORMAL
+      rvfi_valid       <= 1'b0;
+      rvfi_order       <= 64'b0;
+      rvfi_order_cnt   <= 64'b0;
+      rvfi_intr_q      <= 1'b0;
+      rvfi_mem_rmask_q <= 4'b0;
+      rvfi_mem_wmask_q <= 4'b0;
+      rvfi_mem_addr_q  <= 32'b0;
+      rvfi_mem_rdata_q <= 32'b0;
+      rvfi_mem_wdata_q <= 32'b0;
+`endif
     end else begin
+`ifdef RISCV_FORMAL
+      rvfi_valid <= 1'b0;  // default; overridden by execute/load/store on retirement
+`endif
       case (cpu_state)
         cpu_state_fetch: begin
           if (i_imem_ready) begin
@@ -259,27 +359,102 @@ module nyanrv (
             imm_U_q <= imm_U;
             imm_J_q <= imm_J;
 
-            if (opcode == 7'b0000011) begin  // Load
-              cpu_state <= cpu_state_load;
+`ifdef RISCV_FORMAL
+            // Capture pre-execution register values for RVFI.
+            // The register file already reflects any write from the
+            // previous instruction (non-blocking assignment took effect),
+            // so a direct read is correct — no forwarding needed here.
+            rvfi_rs1_rdata_q <= X[rs1];
+            rvfi_rs2_rdata_q <= X[rs2];
+            // CSR pre-values
+            rvfi_csr_mstatus_pre  <= CSR[mstatus];
+            rvfi_csr_mtvec_pre    <= CSR[mtvec];
+            rvfi_csr_mscratch_pre <= CSR[mscratch];
+            rvfi_csr_mepc_pre     <= CSR[mepc];
+            rvfi_csr_mcause_pre   <= CSR[mcause];
+            rvfi_csr_mtval_pre    <= CSR[mtval];
+            // Reset mem masks for non-memory instructions
+            rvfi_mem_rmask_q <= 4'b0;
+            rvfi_mem_wmask_q <= 4'b0;
+            rvfi_mem_addr_q  <= 32'b0;
+            rvfi_mem_rdata_q <= 32'b0;
+            rvfi_mem_wdata_q <= 32'b0;
+`endif
+
+            if (opcode == 7'b0000011 &&
+                (f3 == 3'b000 || f3 == 3'b001 || f3 == 3'b010 ||
+                 f3 == 3'b100 || f3 == 3'b101)) begin  // Load (valid funct3)
               load_eff_addr_q <= load_addr_full;
+              // Check alignment: LH/LHU need 2-byte, LW needs 4-byte alignment
+              if ((f3 == 3'b001 || f3 == 3'b101) && load_addr_full[0]) begin
+                // LH/LHU misaligned
+                mem_align_trap <= 1'b1;
+                cpu_state <= cpu_state_load;
+              end else if (f3 == 3'b010 && load_addr_full[1:0] != 2'b00) begin
+                // LW misaligned
+                mem_align_trap <= 1'b1;
+                cpu_state <= cpu_state_load;
+              end else begin
+                mem_align_trap <= 1'b0;
+                cpu_state <= cpu_state_load;
+              end
               dmem_raddr <= load_addr_full & 32'hffff_fffc;
-            end else if (opcode == 7'b0100011) begin  // Store
+`ifdef RISCV_FORMAL
+              rvfi_mem_addr_q  <= load_addr_full & 32'hffff_fffc;
+              rvfi_mem_wmask_q <= 4'b0;
+              case (f3)
+                3'b000: rvfi_mem_rmask_q <= 4'b0001 << load_addr_full[1:0];  // lb
+                3'b001: rvfi_mem_rmask_q <= load_addr_full[1] ? 4'b1100 : 4'b0011;  // lh
+                3'b010: rvfi_mem_rmask_q <= 4'b1111;  // lw
+                3'b100: rvfi_mem_rmask_q <= 4'b0001 << load_addr_full[1:0];  // lbu
+                3'b101: rvfi_mem_rmask_q <= load_addr_full[1] ? 4'b1100 : 4'b0011;  // lhu
+                default: rvfi_mem_rmask_q <= 4'b0;
+              endcase
+`endif
+            end else if (opcode == 7'b0100011 &&
+                         (f3 == 3'b000 || f3 == 3'b001 || f3 == 3'b010)) begin  // Store (valid funct3)
               cpu_state <= cpu_state_store;
               store_eff_addr_q <= store_addr_full;
               dmem_waddr <= store_addr_full & 32'hffff_fffc;
+              // Check alignment: SH needs 2-byte, SW needs 4-byte alignment
+              if ((f3 == 3'b001) && store_addr_full[0]) begin
+                mem_align_trap <= 1'b1;  // SH misaligned
+              end else if (f3 == 3'b010 && store_addr_full[1:0] != 2'b00) begin
+                mem_align_trap <= 1'b1;  // SW misaligned
+              end else begin
+                mem_align_trap <= 1'b0;
+              end
 
               case (f3)
                 3'b000: begin  // sb
                   dmem_wstrb <= 4'b0001 << store_addr_full[1:0];
                   dmem_wdata <= {4{X[rs2][7:0]}};
+`ifdef RISCV_FORMAL
+                  rvfi_mem_addr_q  <= store_addr_full & 32'hffff_fffc;
+                  rvfi_mem_rmask_q <= 4'b0;
+                  rvfi_mem_wmask_q <= 4'b0001 << store_addr_full[1:0];
+                  rvfi_mem_wdata_q <= {4{X[rs2][7:0]}};
+`endif
                 end
                 3'b001: begin  // sh
                   dmem_wstrb <= store_addr_full[1] == 1'b1 ? 4'b1100 : 4'b0011;
                   dmem_wdata <= {2{X[rs2][15:0]}};
+`ifdef RISCV_FORMAL
+                  rvfi_mem_addr_q  <= store_addr_full & 32'hffff_fffc;
+                  rvfi_mem_rmask_q <= 4'b0;
+                  rvfi_mem_wmask_q <= store_addr_full[1] ? 4'b1100 : 4'b0011;
+                  rvfi_mem_wdata_q <= {2{X[rs2][15:0]}};
+`endif
                 end
                 3'b010: begin  // sw
                   dmem_wstrb <= 4'b1111;
                   dmem_wdata <= X[rs2];
+`ifdef RISCV_FORMAL
+                  rvfi_mem_addr_q  <= store_addr_full & 32'hffff_fffc;
+                  rvfi_mem_rmask_q <= 4'b0;
+                  rvfi_mem_wmask_q <= 4'b1111;
+                  rvfi_mem_wdata_q <= X[rs2];
+`endif
                 end
                 default: begin
                   dmem_wstrb <= 4'b0000;
@@ -287,6 +462,9 @@ module nyanrv (
                 end
               endcase  // case (f3)
             end else begin
+              // All other opcodes (including load/store with invalid funct3)
+              // are handled in cpu_state_execute where the combinational `trap`
+              // signal will assert for unrecognized encodings.
               cpu_state <= cpu_state_execute;
             end
           end
@@ -300,15 +478,68 @@ module nyanrv (
             // Set the cause.
             if (insn_ecall_q) CSR[mcause] <= 32'd11;  // Machine-mode environment call
             else if (insn_ebreak_q) CSR[mcause] <= 32'd3;  // Breakpoint
-            else CSR[mcause] <= 32'd2;  // Illegal instruction
+            else CSR[mcause] <= trap_cause;  // 0 = insn misaligned, 2 = illegal
 
-            // mtval: zero for ecall/ebreak/illegal; could store fault address for load/store faults.
+            // mtval: zero for ecall/ebreak/illegal traps.
             CSR[mtval] <= 32'b0;
 
             // Jump to handler and reset state.
             pc <= CSR[mtvec];
             cpu_state <= cpu_state_fetch;
             o_trap <= 1'b1;
+
+`ifdef RISCV_FORMAL
+            rvfi_valid      <= 1'b1;
+            rvfi_order      <= rvfi_order_cnt;
+            rvfi_order_cnt  <= rvfi_order_cnt + 1;
+            rvfi_insn       <= insn_q;
+            rvfi_trap       <= 1'b1;
+            rvfi_halt       <= 1'b0;
+            rvfi_intr       <= rvfi_intr_q;
+            rvfi_intr_q     <= 1'b0;
+            rvfi_mode       <= 2'b11;  // M-mode
+            rvfi_ixl        <= 2'b01;  // XLEN=32
+            rvfi_rs1_addr   <= rs1_q;
+            rvfi_rs2_addr   <= rs2_q;
+            rvfi_rs1_rdata  <= (rs1_q == 5'b0) ? 32'b0 : rvfi_rs1_rdata_q;
+            rvfi_rs2_rdata  <= (rs2_q == 5'b0) ? 32'b0 : rvfi_rs2_rdata_q;
+            rvfi_rd_addr    <= 5'b0;
+            rvfi_rd_wdata   <= 32'b0;
+            rvfi_pc_rdata   <= pc_q;
+            rvfi_pc_wdata   <= CSR[mtvec];
+            rvfi_mem_addr   <= 32'b0;
+            rvfi_mem_rmask  <= 4'b0;
+            rvfi_mem_wmask  <= 4'b0;
+            rvfi_mem_rdata  <= 32'b0;
+            rvfi_mem_wdata  <= 32'b0;
+            // Trap writes mepc, mcause, mtval; mstatus could change too
+            // Report pre/post for written CSRs; others report pre=post (no change)
+            rvfi_csr_mstatus_rmask  <= 32'b0;
+            rvfi_csr_mstatus_wmask  <= 32'b0;
+            rvfi_csr_mstatus_rdata  <= rvfi_csr_mstatus_pre;
+            rvfi_csr_mstatus_wdata  <= rvfi_csr_mstatus_pre;
+            rvfi_csr_mtvec_rmask    <= 32'hffff_ffff;
+            rvfi_csr_mtvec_wmask    <= 32'b0;
+            rvfi_csr_mtvec_rdata    <= rvfi_csr_mtvec_pre;
+            rvfi_csr_mtvec_wdata    <= rvfi_csr_mtvec_pre;
+            rvfi_csr_mscratch_rmask <= 32'b0;
+            rvfi_csr_mscratch_wmask <= 32'b0;
+            rvfi_csr_mscratch_rdata <= rvfi_csr_mscratch_pre;
+            rvfi_csr_mscratch_wdata <= rvfi_csr_mscratch_pre;
+            rvfi_csr_mepc_rmask     <= 32'b0;
+            rvfi_csr_mepc_wmask     <= 32'hffff_ffff;
+            rvfi_csr_mepc_rdata     <= rvfi_csr_mepc_pre;
+            rvfi_csr_mepc_wdata     <= pc_q;
+            rvfi_csr_mcause_rmask   <= 32'b0;
+            rvfi_csr_mcause_wmask   <= 32'hffff_ffff;
+            rvfi_csr_mcause_rdata   <= rvfi_csr_mcause_pre;
+            rvfi_csr_mcause_wdata   <= insn_ecall_q  ? 32'd11 :
+                                       insn_ebreak_q ? 32'd3  : trap_cause;
+            rvfi_csr_mtval_rmask    <= 32'b0;
+            rvfi_csr_mtval_wmask    <= 32'hffff_ffff;
+            rvfi_csr_mtval_rdata    <= rvfi_csr_mtval_pre;
+            rvfi_csr_mtval_wdata    <= 32'b0;
+`endif
           end else begin
             if (write_rd && rd_q != 5'b0) begin
               X[rd_q] <= rd_val;
@@ -319,56 +550,355 @@ module nyanrv (
             if (write_csr_rd) CSR[csr_rd] <= csr_rd_val;
             pc <= pc_next;
             cpu_state <= cpu_state_fetch;
+
+`ifdef RISCV_FORMAL
+            rvfi_valid      <= 1'b1;
+            rvfi_order      <= rvfi_order_cnt;
+            rvfi_order_cnt  <= rvfi_order_cnt + 1;
+            rvfi_insn       <= insn_q;
+            rvfi_trap       <= 1'b0;
+            rvfi_halt       <= 1'b0;
+            rvfi_intr       <= rvfi_intr_q;
+            rvfi_intr_q     <= 1'b0;
+            rvfi_mode       <= 2'b11;  // M-mode
+            rvfi_ixl        <= 2'b01;  // XLEN=32
+            rvfi_rs1_addr   <= rs1_q;
+            rvfi_rs2_addr   <= rs2_q;
+            rvfi_rs1_rdata  <= (rs1_q == 5'b0) ? 32'b0 : rvfi_rs1_rdata_q;
+            rvfi_rs2_rdata  <= (rs2_q == 5'b0) ? 32'b0 : rvfi_rs2_rdata_q;
+            rvfi_rd_addr    <= (write_rd && rd_q != 5'b0) ? rd_q  : 5'b0;
+            rvfi_rd_wdata   <= (write_rd && rd_q != 5'b0) ? rd_val : 32'b0;
+            rvfi_pc_rdata   <= pc_q;
+            rvfi_pc_wdata   <= pc_next;
+            rvfi_mem_addr   <= 32'b0;
+            rvfi_mem_rmask  <= 4'b0;
+            rvfi_mem_wmask  <= 4'b0;
+            rvfi_mem_rdata  <= 32'b0;
+            rvfi_mem_wdata  <= 32'b0;
+            // CSR ports: report reads/writes for CSR instructions
+            begin : rvfi_csr_exec
+              reg csr_active;
+              csr_active = insn_csrrw_q | insn_csrrs_q | insn_csrrc_q |
+                           insn_csrrwi_q | insn_csrrsi_q | insn_csrrci_q;
+              // mstatus
+              rvfi_csr_mstatus_rmask  <= (csr_active && csr_rs == mstatus) ? 32'hffff_ffff : 32'b0;
+              rvfi_csr_mstatus_wmask  <= (write_csr_rd && csr_rd == mstatus) ? 32'hffff_ffff : 32'b0;
+              rvfi_csr_mstatus_rdata  <= rvfi_csr_mstatus_pre;
+              rvfi_csr_mstatus_wdata  <= (write_csr_rd && csr_rd == mstatus) ? csr_rd_val : rvfi_csr_mstatus_pre;
+              // mtvec
+              rvfi_csr_mtvec_rmask    <= (csr_active && csr_rs == mtvec) ? 32'hffff_ffff : 32'b0;
+              rvfi_csr_mtvec_wmask    <= (write_csr_rd && csr_rd == mtvec) ? 32'hffff_ffff : 32'b0;
+              rvfi_csr_mtvec_rdata    <= rvfi_csr_mtvec_pre;
+              rvfi_csr_mtvec_wdata    <= (write_csr_rd && csr_rd == mtvec) ? csr_rd_val : rvfi_csr_mtvec_pre;
+              // mscratch
+              rvfi_csr_mscratch_rmask <= (csr_active && csr_rs == mscratch) ? 32'hffff_ffff : 32'b0;
+              rvfi_csr_mscratch_wmask <= (write_csr_rd && csr_rd == mscratch) ? 32'hffff_ffff : 32'b0;
+              rvfi_csr_mscratch_rdata <= rvfi_csr_mscratch_pre;
+              rvfi_csr_mscratch_wdata <= (write_csr_rd && csr_rd == mscratch) ? csr_rd_val : rvfi_csr_mscratch_pre;
+              // mepc
+              rvfi_csr_mepc_rmask     <= (csr_active && csr_rs == mepc) ? 32'hffff_ffff : 32'b0;
+              rvfi_csr_mepc_wmask     <= (write_csr_rd && csr_rd == mepc) ? 32'hffff_ffff : 32'b0;
+              rvfi_csr_mepc_rdata     <= rvfi_csr_mepc_pre;
+              rvfi_csr_mepc_wdata     <= (write_csr_rd && csr_rd == mepc) ? csr_rd_val : rvfi_csr_mepc_pre;
+              // mcause
+              rvfi_csr_mcause_rmask   <= (csr_active && csr_rs == mcause) ? 32'hffff_ffff : 32'b0;
+              rvfi_csr_mcause_wmask   <= (write_csr_rd && csr_rd == mcause) ? 32'hffff_ffff : 32'b0;
+              rvfi_csr_mcause_rdata   <= rvfi_csr_mcause_pre;
+              rvfi_csr_mcause_wdata   <= (write_csr_rd && csr_rd == mcause) ? csr_rd_val : rvfi_csr_mcause_pre;
+              // mtval
+              rvfi_csr_mtval_rmask    <= (csr_active && csr_rs == mtval) ? 32'hffff_ffff : 32'b0;
+              rvfi_csr_mtval_wmask    <= (write_csr_rd && csr_rd == mtval) ? 32'hffff_ffff : 32'b0;
+              rvfi_csr_mtval_rdata    <= rvfi_csr_mtval_pre;
+              rvfi_csr_mtval_wdata    <= (write_csr_rd && csr_rd == mtval) ? csr_rd_val : rvfi_csr_mtval_pre;
+            end
+`endif
           end
         end
 
         cpu_state_load: begin
-          // Prevent writing to X[0].
-          if (i_dmem_rready && rd_q != 5'b0) begin
-            case (f3_q)
-              3'b000: begin  // lb
-                case (load_eff_addr_q[1:0])
-                  2'b00: X[rd_q] <= {{24{i_dmem_rdata[7]}}, i_dmem_rdata[7:0]};
-                  2'b01: X[rd_q] <= {{24{i_dmem_rdata[15]}}, i_dmem_rdata[15:8]};
-                  2'b10: X[rd_q] <= {{24{i_dmem_rdata[23]}}, i_dmem_rdata[23:16]};
-                  2'b11: X[rd_q] <= {{24{i_dmem_rdata[31]}}, i_dmem_rdata[31:24]};
-                endcase  // case (load_eff_addr_q[1:0])
-              end
+          if (mem_align_trap) begin
+            // Misaligned load — raise load-address-misaligned exception.
+            CSR[mepc]   <= pc_q;
+            CSR[mcause] <= 32'd4;  // Load address misaligned
+            CSR[mtval]  <= load_eff_addr_q;
+            pc          <= CSR[mtvec];
+            cpu_state   <= cpu_state_fetch;
+            o_trap      <= 1'b1;
+            mem_align_trap <= 1'b0;
+            write_rd_prev  <= 1'b0;
+`ifdef RISCV_FORMAL
+            rvfi_valid     <= 1'b1;
+            rvfi_order     <= rvfi_order_cnt;
+            rvfi_order_cnt <= rvfi_order_cnt + 1;
+            rvfi_insn      <= insn_q;
+            rvfi_trap      <= 1'b1;
+            rvfi_halt      <= 1'b0;
+            rvfi_intr      <= rvfi_intr_q;
+            rvfi_intr_q    <= 1'b0;
+            rvfi_mode      <= 2'b11;
+            rvfi_ixl       <= 2'b01;
+            rvfi_rs1_addr  <= rs1_q;
+            rvfi_rs2_addr  <= 5'b0;
+            rvfi_rs1_rdata <= (rs1_q == 5'b0) ? 32'b0 : rvfi_rs1_rdata_q;
+            rvfi_rs2_rdata <= 32'b0;
+            rvfi_rd_addr   <= 5'b0;
+            rvfi_rd_wdata  <= 32'b0;
+            rvfi_pc_rdata  <= pc_q;
+            rvfi_pc_wdata  <= CSR[mtvec];
+            rvfi_mem_addr  <= rvfi_mem_addr_q;
+            rvfi_mem_rmask <= rvfi_mem_rmask_q;
+            rvfi_mem_wmask <= 4'b0;
+            rvfi_mem_rdata <= 32'b0;
+            rvfi_mem_wdata <= 32'b0;
+            rvfi_csr_mstatus_rmask  <= 32'b0;
+            rvfi_csr_mstatus_wmask  <= 32'b0;
+            rvfi_csr_mstatus_rdata  <= rvfi_csr_mstatus_pre;
+            rvfi_csr_mstatus_wdata  <= rvfi_csr_mstatus_pre;
+            rvfi_csr_mtvec_rmask    <= 32'b0;
+            rvfi_csr_mtvec_wmask    <= 32'b0;
+            rvfi_csr_mtvec_rdata    <= rvfi_csr_mtvec_pre;
+            rvfi_csr_mtvec_wdata    <= rvfi_csr_mtvec_pre;
+            rvfi_csr_mscratch_rmask <= 32'b0;
+            rvfi_csr_mscratch_wmask <= 32'b0;
+            rvfi_csr_mscratch_rdata <= rvfi_csr_mscratch_pre;
+            rvfi_csr_mscratch_wdata <= rvfi_csr_mscratch_pre;
+            rvfi_csr_mepc_rmask     <= 32'b0;
+            rvfi_csr_mepc_wmask     <= 32'hffff_ffff;
+            rvfi_csr_mepc_rdata     <= rvfi_csr_mepc_pre;
+            rvfi_csr_mepc_wdata     <= pc_q;
+            rvfi_csr_mcause_rmask   <= 32'b0;
+            rvfi_csr_mcause_wmask   <= 32'hffff_ffff;
+            rvfi_csr_mcause_rdata   <= rvfi_csr_mcause_pre;
+            rvfi_csr_mcause_wdata   <= 32'd4;
+            rvfi_csr_mtval_rmask    <= 32'b0;
+            rvfi_csr_mtval_wmask    <= 32'hffff_ffff;
+            rvfi_csr_mtval_rdata    <= rvfi_csr_mtval_pre;
+            rvfi_csr_mtval_wdata    <= load_eff_addr_q;
+`endif
+          end else
+          if (i_dmem_rready) begin
+`ifdef RISCV_FORMAL
+            rvfi_mem_rdata_q <= i_dmem_rdata;
+`endif
+            if (rd_q != 5'b0) begin
+              case (f3_q)
+                3'b000: begin  // lb
+                  case (load_eff_addr_q[1:0])
+                    2'b00: X[rd_q] <= {{24{i_dmem_rdata[7]}}, i_dmem_rdata[7:0]};
+                    2'b01: X[rd_q] <= {{24{i_dmem_rdata[15]}}, i_dmem_rdata[15:8]};
+                    2'b10: X[rd_q] <= {{24{i_dmem_rdata[23]}}, i_dmem_rdata[23:16]};
+                    2'b11: X[rd_q] <= {{24{i_dmem_rdata[31]}}, i_dmem_rdata[31:24]};
+                  endcase  // case (load_eff_addr_q[1:0])
+                end
 
-              3'b001: begin  // lh
-                if (load_eff_addr_q[1] == 1'b1)
-                  X[rd_q] <= {{16{i_dmem_rdata[31]}}, i_dmem_rdata[31:16]};
-                else X[rd_q] <= {{16{i_dmem_rdata[15]}}, i_dmem_rdata[15:0]};
-              end
+                3'b001: begin  // lh
+                  if (load_eff_addr_q[1] == 1'b1)
+                    X[rd_q] <= {{16{i_dmem_rdata[31]}}, i_dmem_rdata[31:16]};
+                  else X[rd_q] <= {{16{i_dmem_rdata[15]}}, i_dmem_rdata[15:0]};
+                end
 
-              3'b010: begin  // lw
-                X[rd_q] <= i_dmem_rdata;
-              end
+                3'b010: begin  // lw
+                  X[rd_q] <= i_dmem_rdata;
+                end
 
-              3'b100: begin  // lbu
-                case (load_eff_addr_q[1:0])
-                  2'b00: X[rd_q] <= {24'b0, i_dmem_rdata[7:0]};
-                  2'b01: X[rd_q] <= {24'b0, i_dmem_rdata[15:8]};
-                  2'b10: X[rd_q] <= {24'b0, i_dmem_rdata[23:16]};
-                  2'b11: X[rd_q] <= {24'b0, i_dmem_rdata[31:24]};
-                endcase  // case (load_eff_addr_q[1:0])
-              end
+                3'b100: begin  // lbu
+                  case (load_eff_addr_q[1:0])
+                    2'b00: X[rd_q] <= {24'b0, i_dmem_rdata[7:0]};
+                    2'b01: X[rd_q] <= {24'b0, i_dmem_rdata[15:8]};
+                    2'b10: X[rd_q] <= {24'b0, i_dmem_rdata[23:16]};
+                    2'b11: X[rd_q] <= {24'b0, i_dmem_rdata[31:24]};
+                  endcase  // case (load_eff_addr_q[1:0])
+                end
 
-              3'b101: begin  // lhu
-                if (load_eff_addr_q[1] == 1'b1) X[rd_q] <= {16'b0, i_dmem_rdata[31:16]};
-                else X[rd_q] <= {16'b0, i_dmem_rdata[15:0]};
-              end
-            endcase  // case (f3_q)
+                3'b101: begin  // lhu
+                  if (load_eff_addr_q[1] == 1'b1) X[rd_q] <= {16'b0, i_dmem_rdata[31:16]};
+                  else X[rd_q] <= {16'b0, i_dmem_rdata[15:0]};
+                end
+              endcase  // case (f3_q)
+            end  // rd_q != 0
+
+            // Clear forwarding state: load result is now in X[]; next fetch
+            // must read from X[] directly, not from a stale rd_val_prev.
+            write_rd_prev <= 1'b0;
 
             pc <= pc_next;
             cpu_state <= cpu_state_fetch;
+
+`ifdef RISCV_FORMAL
+            rvfi_valid      <= 1'b1;
+            rvfi_order      <= rvfi_order_cnt;
+            rvfi_order_cnt  <= rvfi_order_cnt + 1;
+            rvfi_insn       <= insn_q;
+            rvfi_trap       <= 1'b0;
+            rvfi_halt       <= 1'b0;
+            rvfi_intr       <= rvfi_intr_q;
+            rvfi_intr_q     <= 1'b0;
+            rvfi_mode       <= 2'b11;
+            rvfi_ixl        <= 2'b01;
+            rvfi_rs1_addr   <= rs1_q;
+            rvfi_rs2_addr   <= 5'b0;
+            rvfi_rs1_rdata  <= (rs1_q == 5'b0) ? 32'b0 : rvfi_rs1_rdata_q;
+            rvfi_rs2_rdata  <= 32'b0;
+            rvfi_rd_addr    <= rd_q;
+            // rd_wdata is what was written — 0 when rd=x0 (no write)
+            if (rd_q == 5'b0) begin
+              rvfi_rd_wdata <= 32'b0;
+            end else begin
+              case (f3_q)
+                3'b000: begin  // lb
+                  case (load_eff_addr_q[1:0])
+                    2'b00: rvfi_rd_wdata <= {{24{i_dmem_rdata[7]}},  i_dmem_rdata[7:0]};
+                    2'b01: rvfi_rd_wdata <= {{24{i_dmem_rdata[15]}}, i_dmem_rdata[15:8]};
+                    2'b10: rvfi_rd_wdata <= {{24{i_dmem_rdata[23]}}, i_dmem_rdata[23:16]};
+                    2'b11: rvfi_rd_wdata <= {{24{i_dmem_rdata[31]}}, i_dmem_rdata[31:24]};
+                  endcase
+                end
+                3'b001: begin  // lh
+                  rvfi_rd_wdata <= load_eff_addr_q[1] ?
+                    {{16{i_dmem_rdata[31]}}, i_dmem_rdata[31:16]} :
+                    {{16{i_dmem_rdata[15]}}, i_dmem_rdata[15:0]};
+                end
+                3'b010:  rvfi_rd_wdata <= i_dmem_rdata;  // lw
+                3'b100: begin  // lbu
+                  case (load_eff_addr_q[1:0])
+                    2'b00: rvfi_rd_wdata <= {24'b0, i_dmem_rdata[7:0]};
+                    2'b01: rvfi_rd_wdata <= {24'b0, i_dmem_rdata[15:8]};
+                    2'b10: rvfi_rd_wdata <= {24'b0, i_dmem_rdata[23:16]};
+                    2'b11: rvfi_rd_wdata <= {24'b0, i_dmem_rdata[31:24]};
+                  endcase
+                end
+                3'b101: begin  // lhu
+                  rvfi_rd_wdata <= load_eff_addr_q[1] ?
+                    {16'b0, i_dmem_rdata[31:16]} : {16'b0, i_dmem_rdata[15:0]};
+                end
+                default: rvfi_rd_wdata <= 32'b0;
+              endcase
+            end
+            rvfi_pc_rdata   <= pc_q;
+            rvfi_pc_wdata   <= pc_next;
+            rvfi_mem_addr   <= rvfi_mem_addr_q;
+            rvfi_mem_rmask  <= rvfi_mem_rmask_q;
+            rvfi_mem_wmask  <= 4'b0;
+            rvfi_mem_rdata  <= i_dmem_rdata;
+            rvfi_mem_wdata  <= 32'b0;
+            rvfi_csr_mstatus_rmask  <= 32'b0; rvfi_csr_mstatus_wmask  <= 32'b0;
+            rvfi_csr_mstatus_rdata  <= rvfi_csr_mstatus_pre; rvfi_csr_mstatus_wdata  <= rvfi_csr_mstatus_pre;
+            rvfi_csr_mtvec_rmask    <= 32'b0; rvfi_csr_mtvec_wmask    <= 32'b0;
+            rvfi_csr_mtvec_rdata    <= rvfi_csr_mtvec_pre; rvfi_csr_mtvec_wdata    <= rvfi_csr_mtvec_pre;
+            rvfi_csr_mscratch_rmask <= 32'b0; rvfi_csr_mscratch_wmask <= 32'b0;
+            rvfi_csr_mscratch_rdata <= rvfi_csr_mscratch_pre; rvfi_csr_mscratch_wdata <= rvfi_csr_mscratch_pre;
+            rvfi_csr_mepc_rmask     <= 32'b0; rvfi_csr_mepc_wmask     <= 32'b0;
+            rvfi_csr_mepc_rdata     <= rvfi_csr_mepc_pre; rvfi_csr_mepc_wdata     <= rvfi_csr_mepc_pre;
+            rvfi_csr_mcause_rmask   <= 32'b0; rvfi_csr_mcause_wmask   <= 32'b0;
+            rvfi_csr_mcause_rdata   <= rvfi_csr_mcause_pre; rvfi_csr_mcause_wdata   <= rvfi_csr_mcause_pre;
+            rvfi_csr_mtval_rmask    <= 32'b0; rvfi_csr_mtval_wmask    <= 32'b0;
+            rvfi_csr_mtval_rdata    <= rvfi_csr_mtval_pre; rvfi_csr_mtval_wdata    <= rvfi_csr_mtval_pre;
+`endif
           end
         end  // case: cpu_state_load
 
         cpu_state_store: begin
+          if (mem_align_trap) begin
+            // Misaligned store — raise store-address-misaligned exception.
+            CSR[mepc]   <= pc_q;
+            CSR[mcause] <= 32'd6;  // Store/AMO address misaligned
+            CSR[mtval]  <= store_eff_addr_q;
+            pc          <= CSR[mtvec];
+            cpu_state   <= cpu_state_fetch;
+            o_trap      <= 1'b1;
+            mem_align_trap <= 1'b0;
+            write_rd_prev  <= 1'b0;
+`ifdef RISCV_FORMAL
+            rvfi_valid     <= 1'b1;
+            rvfi_order     <= rvfi_order_cnt;
+            rvfi_order_cnt <= rvfi_order_cnt + 1;
+            rvfi_insn      <= insn_q;
+            rvfi_trap      <= 1'b1;
+            rvfi_halt      <= 1'b0;
+            rvfi_intr      <= rvfi_intr_q;
+            rvfi_intr_q    <= 1'b0;
+            rvfi_mode      <= 2'b11;
+            rvfi_ixl       <= 2'b01;
+            rvfi_rs1_addr  <= rs1_q;
+            rvfi_rs2_addr  <= rs2_q;
+            rvfi_rs1_rdata <= (rs1_q == 5'b0) ? 32'b0 : rvfi_rs1_rdata_q;
+            rvfi_rs2_rdata <= (rs2_q == 5'b0) ? 32'b0 : rvfi_rs2_rdata_q;
+            rvfi_rd_addr   <= 5'b0;
+            rvfi_rd_wdata  <= 32'b0;
+            rvfi_pc_rdata  <= pc_q;
+            rvfi_pc_wdata  <= CSR[mtvec];
+            rvfi_mem_addr  <= rvfi_mem_addr_q;
+            rvfi_mem_rmask <= 4'b0;
+            rvfi_mem_wmask <= rvfi_mem_wmask_q;
+            rvfi_mem_rdata <= 32'b0;
+            rvfi_mem_wdata <= rvfi_mem_wdata_q;
+            rvfi_csr_mstatus_rmask  <= 32'b0;
+            rvfi_csr_mstatus_wmask  <= 32'b0;
+            rvfi_csr_mstatus_rdata  <= rvfi_csr_mstatus_pre;
+            rvfi_csr_mstatus_wdata  <= rvfi_csr_mstatus_pre;
+            rvfi_csr_mtvec_rmask    <= 32'b0;
+            rvfi_csr_mtvec_wmask    <= 32'b0;
+            rvfi_csr_mtvec_rdata    <= rvfi_csr_mtvec_pre;
+            rvfi_csr_mtvec_wdata    <= rvfi_csr_mtvec_pre;
+            rvfi_csr_mscratch_rmask <= 32'b0;
+            rvfi_csr_mscratch_wmask <= 32'b0;
+            rvfi_csr_mscratch_rdata <= rvfi_csr_mscratch_pre;
+            rvfi_csr_mscratch_wdata <= rvfi_csr_mscratch_pre;
+            rvfi_csr_mepc_rmask     <= 32'b0;
+            rvfi_csr_mepc_wmask     <= 32'hffff_ffff;
+            rvfi_csr_mepc_rdata     <= rvfi_csr_mepc_pre;
+            rvfi_csr_mepc_wdata     <= pc_q;
+            rvfi_csr_mcause_rmask   <= 32'b0;
+            rvfi_csr_mcause_wmask   <= 32'hffff_ffff;
+            rvfi_csr_mcause_rdata   <= rvfi_csr_mcause_pre;
+            rvfi_csr_mcause_wdata   <= 32'd6;
+            rvfi_csr_mtval_rmask    <= 32'b0;
+            rvfi_csr_mtval_wmask    <= 32'hffff_ffff;
+            rvfi_csr_mtval_rdata    <= rvfi_csr_mtval_pre;
+            rvfi_csr_mtval_wdata    <= store_eff_addr_q;
+`endif
+          end else
           if (i_dmem_wready) begin
             pc <= pc_next;
             cpu_state <= cpu_state_fetch;
+
+`ifdef RISCV_FORMAL
+            rvfi_valid      <= 1'b1;
+            rvfi_order      <= rvfi_order_cnt;
+            rvfi_order_cnt  <= rvfi_order_cnt + 1;
+            rvfi_insn       <= insn_q;
+            rvfi_trap       <= 1'b0;
+            rvfi_halt       <= 1'b0;
+            rvfi_intr       <= rvfi_intr_q;
+            rvfi_intr_q     <= 1'b0;
+            rvfi_mode       <= 2'b11;
+            rvfi_ixl        <= 2'b01;
+            rvfi_rs1_addr   <= rs1_q;
+            rvfi_rs2_addr   <= rs2_q;
+            rvfi_rs1_rdata  <= (rs1_q == 5'b0) ? 32'b0 : rvfi_rs1_rdata_q;
+            rvfi_rs2_rdata  <= (rs2_q == 5'b0) ? 32'b0 : rvfi_rs2_rdata_q;
+            rvfi_rd_addr    <= 5'b0;
+            rvfi_rd_wdata   <= 32'b0;
+            rvfi_pc_rdata   <= pc_q;
+            rvfi_pc_wdata   <= pc_next;
+            rvfi_mem_addr   <= rvfi_mem_addr_q;
+            rvfi_mem_rmask  <= 4'b0;
+            rvfi_mem_wmask  <= rvfi_mem_wmask_q;
+            rvfi_mem_rdata  <= 32'b0;
+            rvfi_mem_wdata  <= rvfi_mem_wdata_q;
+            rvfi_csr_mstatus_rmask  <= 32'b0; rvfi_csr_mstatus_wmask  <= 32'b0;
+            rvfi_csr_mstatus_rdata  <= rvfi_csr_mstatus_pre; rvfi_csr_mstatus_wdata  <= rvfi_csr_mstatus_pre;
+            rvfi_csr_mtvec_rmask    <= 32'b0; rvfi_csr_mtvec_wmask    <= 32'b0;
+            rvfi_csr_mtvec_rdata    <= rvfi_csr_mtvec_pre; rvfi_csr_mtvec_wdata    <= rvfi_csr_mtvec_pre;
+            rvfi_csr_mscratch_rmask <= 32'b0; rvfi_csr_mscratch_wmask <= 32'b0;
+            rvfi_csr_mscratch_rdata <= rvfi_csr_mscratch_pre; rvfi_csr_mscratch_wdata <= rvfi_csr_mscratch_pre;
+            rvfi_csr_mepc_rmask     <= 32'b0; rvfi_csr_mepc_wmask     <= 32'b0;
+            rvfi_csr_mepc_rdata     <= rvfi_csr_mepc_pre; rvfi_csr_mepc_wdata     <= rvfi_csr_mepc_pre;
+            rvfi_csr_mcause_rmask   <= 32'b0; rvfi_csr_mcause_wmask   <= 32'b0;
+            rvfi_csr_mcause_rdata   <= rvfi_csr_mcause_pre; rvfi_csr_mcause_wdata   <= rvfi_csr_mcause_pre;
+            rvfi_csr_mtval_rmask    <= 32'b0; rvfi_csr_mtval_wmask    <= 32'b0;
+            rvfi_csr_mtval_rdata    <= rvfi_csr_mtval_pre; rvfi_csr_mtval_wdata    <= rvfi_csr_mtval_pre;
+`endif
           end
         end
       endcase  // case (cpu_state)
@@ -377,6 +907,7 @@ module nyanrv (
 
   always @(*) begin
     trap = 1'b0;
+    trap_cause = 32'd2;  // default: illegal instruction
     write_rd = 1'b0;
     pc_next = pc_q + 4;
     rs1_val = (write_rd_prev && rs1_q == rd_prev_q && rd_prev_q != 5'b0) ? rd_val_prev : X[rs1_q];
@@ -390,6 +921,7 @@ module nyanrv (
     csr_rd_val = 32'b0;
     write_csr_rd = 1'b0;
 
+    trap_cause = 32'd2;  // default: illegal instruction
     if (insn_lui_q) begin
       write_rd = 1'b1;
       rd_val   = imm_U_q;
@@ -400,35 +932,34 @@ module nyanrv (
       write_rd = 1'b1;
       rd_val   = pc_q + 4;
       pc_next  = pc_q + imm_J_q;
+      if (pc_next[1:0] != 2'b00) begin trap = 1'b1; trap_cause = 32'd0; end
     end else if (insn_jalr_q) begin
-      write_rd = 1'b1;
       jalr_target = (rs1_val + imm_I_q) & 32'hffff_fffe;
-      rd_val = pc_q + 4;  // Save the return address.
-      pc_next = jalr_target;
+      if (jalr_target[1:0] != 2'b00) begin
+        trap = 1'b1; trap_cause = 32'd0;
+      end else begin
+        write_rd = 1'b1;
+        rd_val = pc_q + 4;
+        pc_next = jalr_target;
+      end
     end else if (insn_beq_q) begin
-      if (rs1_val == rs2_val) begin
-        pc_next = pc_q + imm_B_q;
-      end
+      if (rs1_val == rs2_val) pc_next = pc_q + imm_B_q;
+      if (pc_next[1:0] != 2'b00) begin trap = 1'b1; trap_cause = 32'd0; end
     end else if (insn_bne_q) begin
-      if (rs1_val != rs2_val) begin
-        pc_next = pc_q + imm_B_q;
-      end
+      if (rs1_val != rs2_val) pc_next = pc_q + imm_B_q;
+      if (pc_next[1:0] != 2'b00) begin trap = 1'b1; trap_cause = 32'd0; end
     end else if (insn_blt_q) begin
-      if ($signed(rs1_val) < $signed(rs2_val)) begin
-        pc_next = pc_q + imm_B_q;
-      end
+      if ($signed(rs1_val) < $signed(rs2_val)) pc_next = pc_q + imm_B_q;
+      if (pc_next[1:0] != 2'b00) begin trap = 1'b1; trap_cause = 32'd0; end
     end else if (insn_bge_q) begin
-      if ($signed(rs1_val) >= $signed(rs2_val)) begin
-        pc_next = pc_q + imm_B_q;
-      end
+      if ($signed(rs1_val) >= $signed(rs2_val)) pc_next = pc_q + imm_B_q;
+      if (pc_next[1:0] != 2'b00) begin trap = 1'b1; trap_cause = 32'd0; end
     end else if (insn_bltu_q) begin
-      if ($unsigned(rs1_val) < $unsigned(rs2_val)) begin
-        pc_next = pc_q + imm_B_q;
-      end
+      if ($unsigned(rs1_val) < $unsigned(rs2_val)) pc_next = pc_q + imm_B_q;
+      if (pc_next[1:0] != 2'b00) begin trap = 1'b1; trap_cause = 32'd0; end
     end else if (insn_bgeu_q) begin
-      if ($unsigned(rs1_val) >= $unsigned(rs2_val)) begin
-        pc_next = pc_q + imm_B_q;
-      end
+      if ($unsigned(rs1_val) >= $unsigned(rs2_val)) pc_next = pc_q + imm_B_q;
+      if (pc_next[1:0] != 2'b00) begin trap = 1'b1; trap_cause = 32'd0; end
     end else if (insn_lb_q || insn_lh_q || insn_lw_q || insn_lbu_q || insn_lhu_q) begin
       // Do nothing here.
     end else if (insn_sb_q || insn_sh_q || insn_sw_q) begin
