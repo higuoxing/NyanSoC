@@ -39,6 +39,65 @@ module decoder (
 
 endmodule  // decoder
 
+// ── Integer register file ─────────────────────────────────────────────────────
+// Four asynchronous read ports (rs1/rs2 in fetch, rs1_q/rs2_q in execute),
+// one synchronous write port. Multiple read ports are fine for BRAM inference;
+// having exactly one write port is what matters.
+// x0 reads as zero regardless of writes; writes to x0 are ignored.
+//
+// Reset: uses the single write port to zero x1..x31 one register per clock
+// cycle. o_rst_done goes high after all 32 registers are zeroed. The CPU must
+// hold its own state machine in reset until o_rst_done is asserted.
+// This costs 32 cycles but avoids a 32-write-port memory (which cannot map to BRAM).
+module regfile (
+    input  wire        i_clk,
+    input  wire        i_rst_n,    // active-low reset
+    output wire        o_rst_done, // high once all registers are zeroed
+    // Fetch-time read ports (combinatorial, addressed by current instruction)
+    input  wire [ 4:0] i_rs1_f,
+    output wire [31:0] o_rs1_f,
+    input  wire [ 4:0] i_rs2_f,
+    output wire [31:0] o_rs2_f,
+    // Execute-time read ports (combinatorial, addressed by latched rs1_q/rs2_q)
+    input  wire [ 4:0] i_rs1_x,
+    output wire [31:0] o_rs1_x,
+    input  wire [ 4:0] i_rs2_x,
+    output wire [31:0] o_rs2_x,
+    // Write port (ignored during reset; the reset sequencer takes priority)
+    input  wire        i_we,
+    input  wire [ 4:0] i_waddr,
+    input  wire [31:0] i_wdata
+);
+  reg [31:0] mem[0:31];
+
+  // Reset sequencer: counts x0..x31, then stays at 31 (done).
+  reg [5:0] rst_cnt;  // 6 bits so we can detect > 31
+  assign o_rst_done = rst_cnt[5];  // set once counter overflows past 31
+
+  integer i;
+  initial begin
+    rst_cnt = 6'b0;
+    for (i = 0; i < 32; i = i + 1) mem[i] = 32'b0;
+  end
+
+  always @(posedge i_clk) begin
+    if (!i_rst_n) begin
+      rst_cnt <= 6'b0;
+    end else if (!o_rst_done) begin
+      // Zero one register per cycle using the single write port.
+      mem[rst_cnt[4:0]] <= 32'b0;
+      rst_cnt <= rst_cnt + 1;
+    end else if (i_we && i_waddr != 5'b0) begin
+      mem[i_waddr] <= i_wdata;
+    end
+  end
+
+  assign o_rs1_f = (i_rs1_f == 5'b0) ? 32'b0 : mem[i_rs1_f];
+  assign o_rs2_f = (i_rs2_f == 5'b0) ? 32'b0 : mem[i_rs2_f];
+  assign o_rs1_x = (i_rs1_x == 5'b0) ? 32'b0 : mem[i_rs1_x];
+  assign o_rs2_x = (i_rs2_x == 5'b0) ? 32'b0 : mem[i_rs2_x];
+endmodule  // regfile
+
 module nyanrv (
     input wire i_clk,
     input wire i_rst_n,
@@ -141,7 +200,11 @@ module nyanrv (
 
   // Registers {{
   reg [31:0] pc;
-  reg [31:0] X[0:31];
+
+  // Register file outputs (combinatorial reads from regfile module).
+  // _f = fetch-time (unregistered rs1/rs2), _x = execute-time (rs1_q/rs2_q).
+  wire [31:0] rf_rs1_f, rf_rs2_f;  // fetch-time: for address calc & store data
+  wire [31:0] rf_rs1_x, rf_rs2_x;  // execute-time: for ALU operands
 
   reg [31:0] CSR[0:10];
   localparam mstatus = 0;
@@ -235,8 +298,44 @@ module nyanrv (
   assign o_dmem_wvalid = cpu_state == cpu_state_store;
   // }}
 
-  wire [31:0] load_addr_full = X[rs1] + imm_I;
-  wire [31:0] store_addr_full = X[rs1] + imm_S;
+  wire [31:0] load_addr_full = rf_rs1_f + imm_I;
+  wire [31:0] store_addr_full = rf_rs1_f + imm_S;
+
+  // Combinatorial load result mux — decoded from i_dmem_rdata.
+  // Having this as a wire (not a per-case assignment inside the clocked block)
+  // means yosys sees regfile as a single-write-port memory and can map it to BRAM.
+  reg [31:0] load_wdata;
+  always @(*) begin
+    case (f3_q)
+      3'b000: begin  // lb
+        case (load_eff_addr_q[1:0])
+          2'b00: load_wdata = {{24{i_dmem_rdata[7]}},  i_dmem_rdata[7:0]};
+          2'b01: load_wdata = {{24{i_dmem_rdata[15]}}, i_dmem_rdata[15:8]};
+          2'b10: load_wdata = {{24{i_dmem_rdata[23]}}, i_dmem_rdata[23:16]};
+          2'b11: load_wdata = {{24{i_dmem_rdata[31]}}, i_dmem_rdata[31:24]};
+        endcase
+      end
+      3'b001: begin  // lh
+        load_wdata = load_eff_addr_q[1] ?
+          {{16{i_dmem_rdata[31]}}, i_dmem_rdata[31:16]} :
+          {{16{i_dmem_rdata[15]}}, i_dmem_rdata[15:0]};
+      end
+      3'b010: load_wdata = i_dmem_rdata;  // lw
+      3'b100: begin  // lbu
+        case (load_eff_addr_q[1:0])
+          2'b00: load_wdata = {24'b0, i_dmem_rdata[7:0]};
+          2'b01: load_wdata = {24'b0, i_dmem_rdata[15:8]};
+          2'b10: load_wdata = {24'b0, i_dmem_rdata[23:16]};
+          2'b11: load_wdata = {24'b0, i_dmem_rdata[31:24]};
+        endcase
+      end
+      3'b101: begin  // lhu
+        load_wdata = load_eff_addr_q[1] ?
+          {16'b0, i_dmem_rdata[31:16]} : {16'b0, i_dmem_rdata[15:0]};
+      end
+      default: load_wdata = 32'b0;
+    endcase
+  end
 
   wire insn_lui_q = { opcode_q } == { 7'b0110111 },
   insn_auipc_q = { opcode_q } == { 7'b0010111 },
@@ -301,6 +400,13 @@ module nyanrv (
   reg  [31:0] jalr_target;
   reg  [ 4:0] shamt;
 
+  // Single write-back select: combinatorial signals fed to the regfile write port.
+  // Keeping these in always @(*) means yosys sees exactly one write port
+  // on regfile.mem[] and can map it to BRAM.
+  reg        x_we;
+  reg [31:0] x_wdata;
+  reg [ 4:0] x_waddr;
+
   wire [11:0] csr_addr = insn_q[31:20];
   reg [3:0] csr_rs, csr_rd;
   reg [31:0] csr_rd_val;
@@ -333,7 +439,28 @@ module nyanrv (
   reg        rvfi_intr_q;
 `endif
 
+  // Register file instantiation.
+  wire rf_rst_done;
+  regfile u_regfile (
+      .i_clk      (i_clk),
+      .i_rst_n    (i_rst_n),
+      .o_rst_done (rf_rst_done),
+      .i_rs1_f (rs1),    .o_rs1_f (rf_rs1_f),
+      .i_rs2_f (rs2),    .o_rs2_f (rf_rs2_f),
+      .i_rs1_x (rs1_q),  .o_rs1_x (rf_rs1_x),
+      .i_rs2_x (rs2_q),  .o_rs2_x (rf_rs2_x),
+      .i_we    (x_we),
+      .i_waddr (x_waddr),
+      .i_wdata (x_wdata)
+  );
+
+  // Initialise CSR[] at power-on.
   integer reg_idx;
+  initial begin
+    for (reg_idx = 0; reg_idx < mcsr_max; reg_idx = reg_idx + 1)
+      CSR[reg_idx] = (reg_idx == misa) ? 32'h4000_0100 : 32'b0;
+  end
+
   always @(posedge i_clk) begin
     if (!i_rst_n) begin
       o_trap <= 1'b0;
@@ -341,9 +468,6 @@ module nyanrv (
       pc <= 32'b0;
       write_rd_prev <= 1'b0;
       mem_align_trap <= 1'b0;
-      for (reg_idx = 0; reg_idx < 32; reg_idx = reg_idx + 1) X[reg_idx] <= 32'b0;
-      for (reg_idx = 0; reg_idx < mcsr_max; reg_idx = reg_idx + 1)
-      CSR[reg_idx] <= (reg_idx == misa) ? 32'h4000_0100 : 32'b0;  // RV32I in misa
 `ifdef RISCV_FORMAL
       rvfi_valid       <= 1'b0;
       rvfi_order       <= 64'b0;
@@ -361,7 +485,7 @@ module nyanrv (
 `endif
       case (cpu_state)
         cpu_state_fetch: begin
-          if (i_imem_ready) begin
+          if (i_imem_ready && rf_rst_done) begin
             if (irq_pending) begin
               // -------------------------------------------------------
               // Take interrupt: redirect to mtvec without executing the
@@ -460,8 +584,8 @@ module nyanrv (
             // The register file already reflects any write from the
             // previous instruction (non-blocking assignment took effect),
             // so a direct read is correct — no forwarding needed here.
-            rvfi_rs1_rdata_q <= X[rs1];
-            rvfi_rs2_rdata_q <= X[rs2];
+            rvfi_rs1_rdata_q <= rf_rs1_f;
+            rvfi_rs2_rdata_q <= rf_rs2_f;
             // CSR pre-values
             rvfi_csr_mstatus_pre  <= CSR[mstatus];
             rvfi_csr_mtvec_pre    <= CSR[mtvec];
@@ -524,32 +648,32 @@ module nyanrv (
               case (f3)
                 3'b000: begin  // sb
                   dmem_wstrb <= 4'b0001 << store_addr_full[1:0];
-                  dmem_wdata <= {4{X[rs2][7:0]}};
+                  dmem_wdata <= {4{rf_rs2_f[7:0]}};
 `ifdef RISCV_FORMAL
                   rvfi_mem_addr_q  <= store_addr_full & 32'hffff_fffc;
                   rvfi_mem_rmask_q <= 4'b0;
                   rvfi_mem_wmask_q <= 4'b0001 << store_addr_full[1:0];
-                  rvfi_mem_wdata_q <= {4{X[rs2][7:0]}};
+                  rvfi_mem_wdata_q <= {4{rf_rs2_f[7:0]}};
 `endif
                 end
                 3'b001: begin  // sh
                   dmem_wstrb <= store_addr_full[1] == 1'b1 ? 4'b1100 : 4'b0011;
-                  dmem_wdata <= {2{X[rs2][15:0]}};
+                  dmem_wdata <= {2{rf_rs2_f[15:0]}};
 `ifdef RISCV_FORMAL
                   rvfi_mem_addr_q  <= store_addr_full & 32'hffff_fffc;
                   rvfi_mem_rmask_q <= 4'b0;
                   rvfi_mem_wmask_q <= store_addr_full[1] ? 4'b1100 : 4'b0011;
-                  rvfi_mem_wdata_q <= {2{X[rs2][15:0]}};
+                  rvfi_mem_wdata_q <= {2{rf_rs2_f[15:0]}};
 `endif
                 end
                 3'b010: begin  // sw
                   dmem_wstrb <= 4'b1111;
-                  dmem_wdata <= X[rs2];
+                  dmem_wdata <= rf_rs2_f;
 `ifdef RISCV_FORMAL
                   rvfi_mem_addr_q  <= store_addr_full & 32'hffff_fffc;
                   rvfi_mem_rmask_q <= 4'b0;
                   rvfi_mem_wmask_q <= 4'b1111;
-                  rvfi_mem_wdata_q <= X[rs2];
+                  rvfi_mem_wdata_q <= rf_rs2_f;
 `endif
                 end
                 default: begin
@@ -644,10 +768,11 @@ module nyanrv (
 `endif
           end else begin
             if (write_rd && rd_q != 5'b0) begin
-              X[rd_q] <= rd_val;
               write_rd_prev <= 1'b1;
               rd_prev_q <= rd_q;
               rd_val_prev <= rd_val;
+            end else begin
+              write_rd_prev <= 1'b0;
             end
             if (write_csr_rd) CSR[csr_rd] <= csr_rd_val;
             // MRET: restore mstatus — MIE←MPIE, MPIE←1, MPP←0.
@@ -790,45 +915,8 @@ module nyanrv (
 `ifdef RISCV_FORMAL
             rvfi_mem_rdata_q <= i_dmem_rdata;
 `endif
-            if (rd_q != 5'b0) begin
-              case (f3_q)
-                3'b000: begin  // lb
-                  case (load_eff_addr_q[1:0])
-                    2'b00: X[rd_q] <= {{24{i_dmem_rdata[7]}}, i_dmem_rdata[7:0]};
-                    2'b01: X[rd_q] <= {{24{i_dmem_rdata[15]}}, i_dmem_rdata[15:8]};
-                    2'b10: X[rd_q] <= {{24{i_dmem_rdata[23]}}, i_dmem_rdata[23:16]};
-                    2'b11: X[rd_q] <= {{24{i_dmem_rdata[31]}}, i_dmem_rdata[31:24]};
-                  endcase  // case (load_eff_addr_q[1:0])
-                end
-
-                3'b001: begin  // lh
-                  if (load_eff_addr_q[1] == 1'b1)
-                    X[rd_q] <= {{16{i_dmem_rdata[31]}}, i_dmem_rdata[31:16]};
-                  else X[rd_q] <= {{16{i_dmem_rdata[15]}}, i_dmem_rdata[15:0]};
-                end
-
-                3'b010: begin  // lw
-                  X[rd_q] <= i_dmem_rdata;
-                end
-
-                3'b100: begin  // lbu
-                  case (load_eff_addr_q[1:0])
-                    2'b00: X[rd_q] <= {24'b0, i_dmem_rdata[7:0]};
-                    2'b01: X[rd_q] <= {24'b0, i_dmem_rdata[15:8]};
-                    2'b10: X[rd_q] <= {24'b0, i_dmem_rdata[23:16]};
-                    2'b11: X[rd_q] <= {24'b0, i_dmem_rdata[31:24]};
-                  endcase  // case (load_eff_addr_q[1:0])
-                end
-
-                3'b101: begin  // lhu
-                  if (load_eff_addr_q[1] == 1'b1) X[rd_q] <= {16'b0, i_dmem_rdata[31:16]};
-                  else X[rd_q] <= {16'b0, i_dmem_rdata[15:0]};
-                end
-              endcase  // case (f3_q)
-            end  // rd_q != 0
-
-            // Clear forwarding state: load result is now in X[]; next fetch
-            // must read from X[] directly, not from a stale rd_val_prev.
+            // Clear forwarding state: load result is now in regfile; next fetch
+            // must read from regfile directly, not from a stale rd_val_prev.
             write_rd_prev <= 1'b0;
 
             pc <= pc_next;
@@ -850,40 +938,7 @@ module nyanrv (
             rvfi_rs1_rdata  <= (rs1_q == 5'b0) ? 32'b0 : rvfi_rs1_rdata_q;
             rvfi_rs2_rdata  <= 32'b0;
             rvfi_rd_addr    <= rd_q;
-            // rd_wdata is what was written — 0 when rd=x0 (no write)
-            if (rd_q == 5'b0) begin
-              rvfi_rd_wdata <= 32'b0;
-            end else begin
-              case (f3_q)
-                3'b000: begin  // lb
-                  case (load_eff_addr_q[1:0])
-                    2'b00: rvfi_rd_wdata <= {{24{i_dmem_rdata[7]}},  i_dmem_rdata[7:0]};
-                    2'b01: rvfi_rd_wdata <= {{24{i_dmem_rdata[15]}}, i_dmem_rdata[15:8]};
-                    2'b10: rvfi_rd_wdata <= {{24{i_dmem_rdata[23]}}, i_dmem_rdata[23:16]};
-                    2'b11: rvfi_rd_wdata <= {{24{i_dmem_rdata[31]}}, i_dmem_rdata[31:24]};
-                  endcase
-                end
-                3'b001: begin  // lh
-                  rvfi_rd_wdata <= load_eff_addr_q[1] ?
-                    {{16{i_dmem_rdata[31]}}, i_dmem_rdata[31:16]} :
-                    {{16{i_dmem_rdata[15]}}, i_dmem_rdata[15:0]};
-                end
-                3'b010:  rvfi_rd_wdata <= i_dmem_rdata;  // lw
-                3'b100: begin  // lbu
-                  case (load_eff_addr_q[1:0])
-                    2'b00: rvfi_rd_wdata <= {24'b0, i_dmem_rdata[7:0]};
-                    2'b01: rvfi_rd_wdata <= {24'b0, i_dmem_rdata[15:8]};
-                    2'b10: rvfi_rd_wdata <= {24'b0, i_dmem_rdata[23:16]};
-                    2'b11: rvfi_rd_wdata <= {24'b0, i_dmem_rdata[31:24]};
-                  endcase
-                end
-                3'b101: begin  // lhu
-                  rvfi_rd_wdata <= load_eff_addr_q[1] ?
-                    {16'b0, i_dmem_rdata[31:16]} : {16'b0, i_dmem_rdata[15:0]};
-                end
-                default: rvfi_rd_wdata <= 32'b0;
-              endcase
-            end
+            rvfi_rd_wdata   <= (rd_q == 5'b0) ? 32'b0 : load_wdata;
             rvfi_pc_rdata   <= pc_q;
             rvfi_pc_wdata   <= pc_next;
             rvfi_mem_addr   <= rvfi_mem_addr_q;
@@ -1023,8 +1078,8 @@ module nyanrv (
     trap_cause = 32'd2;  // default: illegal instruction
     write_rd = 1'b0;
     pc_next = pc_q + 4;
-    rs1_val = (write_rd_prev && rs1_q == rd_prev_q && rd_prev_q != 5'b0) ? rd_val_prev : X[rs1_q];
-    rs2_val = (write_rd_prev && rs2_q == rd_prev_q && rd_prev_q != 5'b0) ? rd_val_prev : X[rs2_q];
+    rs1_val = (write_rd_prev && rs1_q == rd_prev_q && rd_prev_q != 5'b0) ? rd_val_prev : rf_rs1_x;
+    rs2_val = (write_rd_prev && rs2_q == rd_prev_q && rd_prev_q != 5'b0) ? rd_val_prev : rf_rs2_x;
     rd_val = 32'b0;
     jalr_target = 32'b0;
     shamt = 5'b0;
@@ -1033,6 +1088,11 @@ module nyanrv (
     csr_rd = 4'b0;
     csr_rd_val = 32'b0;
     write_csr_rd = 1'b0;
+
+    // Default: no register file write.
+    x_we    = 1'b0;
+    x_waddr = 5'b0;
+    x_wdata = 32'b0;
 
     trap_cause = 32'd2;  // default: illegal instruction
     if (insn_lui_q) begin
@@ -1232,6 +1292,24 @@ module nyanrv (
       if (csr_rd == mip) csr_rd_val = csr_rd_val & ~32'h0000_0880;
     end else begin
       trap = 1'b1;
+    end
+
+    // Compute single write-back port for the register file.
+    // Execute state: ALU/CSR/JAL/JALR result.
+    if (cpu_state == cpu_state_execute && !insn_ecall_q && !insn_ebreak_q && !trap) begin
+      if (write_rd && rd_q != 5'b0) begin
+        x_we    = 1'b1;
+        x_waddr = rd_q;
+        x_wdata = rd_val;
+      end
+    end
+    // Load state: memory read result (only when data is ready, not misaligned).
+    if (cpu_state == cpu_state_load && !mem_align_trap && i_dmem_rready) begin
+      if (rd_q != 5'b0) begin
+        x_we    = 1'b1;
+        x_waddr = rd_q;
+        x_wdata = load_wdata;
+      end
     end
   end  // always @ (*)
 
