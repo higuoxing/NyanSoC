@@ -1,3 +1,24 @@
+IO_LOC "i_clk" 4;
+CLOCK_LOC "i_clk" BUFG;
+
+IO_LOC "i_rst_n" 88;
+IO_PORT "i_rst_n" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+
+// 6 monochromatic LEDs, active-low on board
+IO_LOC "o_led[0]" 15;
+IO_LOC "o_led[1]" 16;
+IO_LOC "o_led[2]" 17;
+IO_LOC "o_led[3]" 18;
+IO_LOC "o_led[4]" 19;
+IO_LOC "o_led[5]" 20;
+IO_PORT "o_led[0]" IO_TYPE=LVCMOS33;
+IO_PORT "o_led[1]" IO_TYPE=LVCMOS33;
+IO_PORT "o_led[2]" IO_TYPE=LVCMOS33;
+IO_PORT "o_led[3]" IO_TYPE=LVCMOS33;
+IO_PORT "o_led[4]" IO_TYPE=LVCMOS33;
+IO_PORT "o_led[5]" IO_TYPE=LVCMOS33;
+
+// Legacy aliases kept for reference
 IO_LOC "clk" 4;
 CLOCK_LOC "clk" BUFG;
 
