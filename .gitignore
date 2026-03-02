@@ -1,0 +1,18 @@
+# Simulation build artifacts (sim/sw/)
+sim/sw/*.elf
+sim/sw/*.hex
+sim/sw/*.vvp
+sim/sw/*.vcd
+sim/sw/*.dis
+sim/sw/imem.hex
+
+# Formal verification generated checks
+formal/riscv-formal/cores/nyanrv/checks/
+
+# macOS
+.DS_Store
+
+# Editor
+*.swp
+*.swo
+*~
