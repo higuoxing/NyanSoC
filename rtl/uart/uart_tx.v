@@ -1,4 +1,5 @@
-`default_nettype none `timescale 1 ns / 1 ps
+`default_nettype none
+`timescale 1 ns / 1 ps
 
 module uart_tx #(
     parameter integer CLK_FREQ  = 50_000_000,
@@ -22,7 +23,7 @@ module uart_tx #(
   reg        tx;
   reg [ 3:0] bit_count;
   reg [31:0] cycle_count;
-  reg [ 3:0] tx_state;
+  reg [ 1:0] tx_state;
   reg [ 7:0] tx_data;
 
   assign o_tx = tx;
@@ -135,7 +136,7 @@ module uart_tx #(
 
   // Capture the data being sent.
   always @(posedge i_clk) begin
-    if (i_tx_wr && !o_tx_busy && !i_rst_n) f_data <= i_tx_data;
+    if (i_tx_wr && !o_tx_busy && i_rst_n) f_data <= i_tx_data;
   end
 
   // UART TX counter.
