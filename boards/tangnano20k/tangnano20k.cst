@@ -4,6 +4,10 @@ CLOCK_LOC "i_clk" BUFG;
 IO_LOC "i_rst_n" 88;
 IO_PORT "i_rst_n" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
 
+// UART TX → BL616 USB-serial bridge (pin 69)
+IO_LOC "o_tx" 69;
+IO_PORT "o_tx" IO_TYPE=LVCMOS33;
+
 // 6 monochromatic LEDs, active-low on board
 IO_LOC "o_led[0]" 15;
 IO_LOC "o_led[1]" 16;

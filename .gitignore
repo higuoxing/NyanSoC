@@ -1,3 +1,14 @@
+# Board build artifacts
+boards/tangnano20k/imem_rom.vh
+boards/tangnano20k/imem_data_rom.vh
+
+# Firmware build artifacts
+firmware/**/*.elf
+firmware/**/*.hex
+firmware/**/imem_init.vh
+firmware/**/imem_rom.vh
+firmware/**/imem_data_rom.vh
+
 # Simulation build artifacts (sim/sw/)
 sim/sw/*.elf
 sim/sw/*.hex

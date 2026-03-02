@@ -8,11 +8,13 @@
  *   0x0001_0000 - 0x0001_0FFF  DMEM (1 KiB words, BRAM, read/write)
  *   0x0002_0000                GPIO output register
  *                                 bits [5:0] = LED[5:0] (write 1 = on)
+ *   0x0003_0004                UART TX  write: send byte; read: {31'b0, busy}
  *
- * Address decode uses bits [17:16]:
- *   2'b00 -> IMEM  (only via instruction bus)
- *   2'b01 -> DMEM
- *   2'b10 -> GPIO
+ * Address decode uses bits [19:16]:
+ *   4'b0000 -> IMEM  (only via instruction bus)
+ *   4'b0001 -> DMEM
+ *   4'b0010 -> GPIO
+ *   4'b0011 -> UART (TX at offset 4)
  *
  * Reset: i_rst_n is the S1 button (active-low, pulled high at rest).
  * A power-on reset shift register (por_sr) guarantees reset is held for
@@ -20,10 +22,14 @@
  * needing to press S1.
  */
 
-module soc (
+module top #(
+    parameter integer CLK_FREQ  = 27_000_000,
+    parameter integer BAUD_RATE = 115_200
+) (
     input  wire       i_clk,
     input  wire       i_rst_n,  // S1 button: 1 when pressed, 0 at rest (pulled low)
-    output wire [5:0] o_led     // active-low LEDs (6 monochromatic)
+    output wire [5:0] o_led,    // active-low LEDs (6 monochromatic)
+    output wire       o_tx      // UART TX
 );
 
   // ── Parameters ────────────────────────────────────────────────────────────
@@ -72,8 +78,7 @@ module soc (
   // ── Data BRAM ─────────────────────────────────────────────────────────────
   reg [31:0] dmem[0:DMEM_WORDS-1];
 
-  wire dmem_rsel = dmem_rvalid && (dmem_raddr[17:16] == 2'b01);
-  wire dmem_wsel = dmem_wvalid && (dmem_waddr[17:16] == 2'b01);
+  wire dmem_wsel = dmem_wvalid && (dmem_waddr[19:16] == 4'b0001);
 
   wire [9:0] dmem_raddr_idx = dmem_raddr[11:2];
   wire [9:0] dmem_waddr_idx = dmem_waddr[11:2];
@@ -87,13 +92,44 @@ module soc (
     end
   end
 
+  // ── UART TX ───────────────────────────────────────────────────────────────
+  wire uart_tx_wr = dmem_wvalid && (dmem_waddr[19:16] == 4'b0011)
+                    && dmem_waddr[2] && dmem_wstrb[0];
+  wire tx_busy;
+
+  uart_tx #(.CLK_FREQ(CLK_FREQ), .BAUD_RATE(BAUD_RATE)) u_uart_tx (
+      .i_clk    (i_clk),
+      .i_rst_n  (rst_n),
+      .i_tx_wr  (uart_tx_wr),
+      .o_tx     (o_tx),
+      .o_tx_busy(tx_busy),
+      .i_tx_data(dmem_wdata[7:0])
+  );
+
+  // ── IMEM data-path read (for .rodata accessed via data bus) ──────────────
+  // The same LUT-ROM is read combinatorially with dmem_raddr for data reads.
+  wire [9:0] dmem_imem_idx = dmem_raddr[11:2];
+  reg [31:0] dmem_imem_rdata;
   always @(*) begin
-    dmem_rdata  = dmem_rsel ? dmem[dmem_raddr_idx] : 32'b0;
+    case (dmem_imem_idx)
+      `include "imem_data_rom.vh"
+      default: dmem_imem_rdata = 32'h00000013;
+    endcase
+  end
+
+  // ── Data-bus read mux ─────────────────────────────────────────────────────
+  always @(*) begin
+    case (dmem_raddr[19:16])
+      4'b0000: dmem_rdata = dmem_imem_rdata;         // IMEM (.rodata reads)
+      4'b0001: dmem_rdata = dmem[dmem_raddr_idx];    // DMEM
+      4'b0011: dmem_rdata = {31'b0, tx_busy};         // UART TX status
+      default: dmem_rdata = 32'b0;
+    endcase
     dmem_rready = dmem_rvalid;
   end
 
   // ── GPIO register ─────────────────────────────────────────────────────────
-  wire gpio_wsel = dmem_wvalid && (dmem_waddr[17:16] == 2'b10);
+  wire gpio_wsel = dmem_wvalid && (dmem_waddr[19:16] == 4'b0010);
 
   reg [5:0] gpio_out;
   always @(posedge i_clk or negedge rst_n) begin
@@ -127,4 +163,4 @@ module soc (
       .o_trap         (o_trap)
   );
 
-endmodule
+endmodule  // top

@@ -1,19 +1,21 @@
 BOARD      = tangnano20k
 ROOT_DIR   = ../..
-PROG_DIR   = $(ROOT_DIR)/firmware/blinky
+PROG_DIR   = $(ROOT_DIR)/firmware/hello_world
 YOSYS     ?= yosys
 NEXTPNR   ?= nextpnr-himbaechel
-TOP_MODULE ?= soc
+TOP_MODULE ?= top
 SOURCES   := $(ROOT_DIR)/rtl/nyanrv.v
+SOURCES   += $(ROOT_DIR)/rtl/uart/uart_tx.v
 SOURCES   += $(TOP_MODULE).v
 
 all: $(BOARD).fs
 
 # ── Blinky hex (instruction memory image) ────────────────────────────────────
-imem.hex imem_rom.vh:
+imem.hex imem_rom.vh imem_data_rom.vh:
 	make -C $(PROG_DIR)
 	cp $(PROG_DIR)/imem.hex .
 	cp $(PROG_DIR)/imem_rom.vh .
+	cp $(PROG_DIR)/imem_data_rom.vh .
 
 # ── FPGA bitstream ────────────────────────────────────────────────────────────
 $(BOARD).fs: $(BOARD).json
@@ -25,7 +27,7 @@ $(BOARD).json: $(BOARD)-synth.json $(BOARD).cst
 	    --vopt family="GW2A-18C" --vopt cst=$(BOARD).cst
 
 # imem_rom.vh must exist before synthesis so the `include resolves.
-$(BOARD)-synth.json: $(SOURCES) imem.hex imem_rom.vh
+$(BOARD)-synth.json: $(SOURCES) imem.hex imem_rom.vh imem_data_rom.vh
 	$(YOSYS) -p "read_verilog $(SOURCES); synth_gowin -json $@ -family gw2a"
 
 .PHONY: flash flash-sram
@@ -37,5 +39,5 @@ flash-sram: $(BOARD).fs
 
 .PHONY: clean
 clean:
-	rm -f *.fs *.json imem.hex imem_rom.vh
+	rm -f *.fs *.json imem.hex imem_rom.vh imem_data_rom.vh
 	make -C $(PROG_DIR) clean
