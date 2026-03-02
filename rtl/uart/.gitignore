@@ -1,3 +1,4 @@
 *_prove
 *_cover
 uart_tx/*
+uart_rx/*
