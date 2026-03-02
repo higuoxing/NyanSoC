@@ -1,4 +1,4 @@
-/* start.S - Minimal CRT0 for NyanSoC bare-metal firmwares.
+/* start.S - Minimal CRT0 for NyanSoC bare-metal firmware.
  *
  * Sets up the stack, zeroes .bss, then jumps to main().
  * The linker script places .text.start first, so _start is the

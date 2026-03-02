@@ -1,4 +1,4 @@
-/* Linker script for NyanSoC firmwares running on Tang Nano 20K.
+/* Linker script for NyanSoC firmware running on Tang Nano 20K.
  *
  * Memory map:
  *   IMEM: 0x0000_0000 - 0x0000_0FFF  (4 KiB, BRAM initialized at synthesis)

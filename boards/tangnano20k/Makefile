@@ -1,6 +1,6 @@
 BOARD      = tangnano20k
 ROOT_DIR   = ../..
-PROG_DIR   = $(ROOT_DIR)/firmwares/blinky
+PROG_DIR   = $(ROOT_DIR)/firmware/blinky
 YOSYS     ?= yosys
 NEXTPNR   ?= nextpnr-himbaechel
 TOP_MODULE ?= soc
