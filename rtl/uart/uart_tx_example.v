@@ -34,7 +34,7 @@ module uart_tx_example (
       .i_tx_data(tx_data)
   );
 
-  always @(posedge i_clk or negedge i_rst_n) begin
+  always @(posedge i_clk) begin
     if (!i_rst_n) begin
       counter <= 0;
     end else begin

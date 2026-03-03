@@ -42,7 +42,7 @@ module uart_rx_example (
   );
 
   // Latch the received byte and request a TX write when the TX is free.
-  always @(posedge i_clk or negedge i_rst_n) begin
+  always @(posedge i_clk) begin
     if (!i_rst_n) begin
       tx_wr   <= 1'b0;
       tx_data <= 8'b0;
