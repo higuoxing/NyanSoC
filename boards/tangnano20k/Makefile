@@ -1,10 +1,12 @@
 BOARD      = tangnano20k
 ROOT_DIR   = ../..
-PROG_DIR   = $(ROOT_DIR)/firmware/hello_world
+FW        ?= echo
+PROG_DIR   = $(ROOT_DIR)/firmware/$(FW)
 YOSYS     ?= yosys
 NEXTPNR   ?= nextpnr-himbaechel
 TOP_MODULE ?= top
 SOURCES   := $(ROOT_DIR)/rtl/nyanrv.v
+SOURCES   += $(ROOT_DIR)/rtl/uart/uart_rx.v
 SOURCES   += $(ROOT_DIR)/rtl/uart/uart_tx.v
 SOURCES   += $(TOP_MODULE).v
 

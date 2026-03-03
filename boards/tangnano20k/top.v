@@ -8,13 +8,14 @@
  *   0x0001_0000 - 0x0001_0FFF  DMEM (1 KiB words, BRAM, read/write)
  *   0x0002_0000                GPIO output register
  *                                 bits [5:0] = LED[5:0] (write 1 = on)
+ *   0x0003_0000                UART RX  read: {23'b0, valid, data[7:0]}  (clears valid)
  *   0x0003_0004                UART TX  write: send byte; read: {31'b0, busy}
  *
  * Address decode uses bits [19:16]:
  *   4'b0000 -> IMEM  (only via instruction bus)
  *   4'b0001 -> DMEM
  *   4'b0010 -> GPIO
- *   4'b0011 -> UART (TX at offset 4)
+ *   4'b0011 -> UART (RX at offset 0, TX at offset 4)
  *
  * Reset: i_rst_n is the S1 button (active-low, pulled high at rest).
  * A power-on reset shift register (por_sr) guarantees reset is held for
@@ -29,6 +30,7 @@ module top #(
     input  wire       i_clk,
     input  wire       i_rst_n,  // S1 button: 1 when pressed, 0 at rest (pulled low)
     output wire [5:0] o_led,    // active-low LEDs (6 monochromatic)
+    input  wire       i_rx,     // UART RX
     output wire       o_tx      // UART TX
 );
 
@@ -76,7 +78,13 @@ module top #(
   end
 
   // ── Data BRAM ─────────────────────────────────────────────────────────────
-  reg [31:0] dmem[0:DMEM_WORDS-1];
+  // Four separate byte-wide BRAMs so each can be written independently.
+  // Gowin BRAM does not support sub-word byte-enable writes on a single
+  // 32-bit-wide instance, so we split into four 8-bit BRAMs instead.
+  reg [7:0] dmem0[0:DMEM_WORDS-1];  // bits  [7: 0]
+  reg [7:0] dmem1[0:DMEM_WORDS-1];  // bits [15: 8]
+  reg [7:0] dmem2[0:DMEM_WORDS-1];  // bits [23:16]
+  reg [7:0] dmem3[0:DMEM_WORDS-1];  // bits [31:24]
 
   wire dmem_wsel = dmem_wvalid && (dmem_waddr[19:16] == 4'b0001);
 
@@ -85,10 +93,10 @@ module top #(
 
   always @(posedge i_clk) begin
     if (dmem_wsel) begin
-      if (dmem_wstrb[0]) dmem[dmem_waddr_idx][ 7: 0] <= dmem_wdata[ 7: 0];
-      if (dmem_wstrb[1]) dmem[dmem_waddr_idx][15: 8] <= dmem_wdata[15: 8];
-      if (dmem_wstrb[2]) dmem[dmem_waddr_idx][23:16] <= dmem_wdata[23:16];
-      if (dmem_wstrb[3]) dmem[dmem_waddr_idx][31:24] <= dmem_wdata[31:24];
+      if (dmem_wstrb[0]) dmem0[dmem_waddr_idx] <= dmem_wdata[ 7: 0];
+      if (dmem_wstrb[1]) dmem1[dmem_waddr_idx] <= dmem_wdata[15: 8];
+      if (dmem_wstrb[2]) dmem2[dmem_waddr_idx] <= dmem_wdata[23:16];
+      if (dmem_wstrb[3]) dmem3[dmem_waddr_idx] <= dmem_wdata[31:24];
     end
   end
 
@@ -106,6 +114,42 @@ module top #(
       .i_tx_data(dmem_wdata[7:0])
   );
 
+  // ── UART RX ───────────────────────────────────────────────────────────────
+  wire       rx_valid_raw;
+  wire [7:0] rx_data_raw;
+
+  uart_rx #(.CLK_FREQ(CLK_FREQ), .BAUD_RATE(BAUD_RATE)) u_uart_rx (
+      .i_clk     (i_clk),
+      .i_rst_n   (rst_n),
+      .i_rx      (i_rx),
+      .o_rx_valid(rx_valid_raw),
+      .o_rx_data (rx_data_raw)
+  );
+
+  // 1-byte latch: holds the last received byte until the CPU reads it.
+  // Reading 0x0003_0000 returns {23'b0, valid, data[7:0]} and clears valid.
+  wire uart_rx_rd = dmem_rvalid && (dmem_raddr[19:16] == 4'b0011)
+                    && (dmem_raddr[2] == 1'b0);
+
+  reg       rx_valid_latch;
+  reg [7:0] rx_data_latch;
+
+  always @(posedge i_clk or negedge rst_n) begin
+    if (!rst_n) begin
+      rx_valid_latch <= 1'b0;
+      rx_data_latch  <= 8'b0;
+    end else begin
+      if (rx_valid_raw) begin
+        // New byte — latch it (takes priority over a simultaneous CPU read).
+        rx_valid_latch <= 1'b1;
+        rx_data_latch  <= rx_data_raw;
+      end else if (uart_rx_rd) begin
+        // CPU read clears the valid flag.
+        rx_valid_latch <= 1'b0;
+      end
+    end
+  end
+
   // ── IMEM data-path read (for .rodata accessed via data bus) ──────────────
   // The same LUT-ROM is read combinatorially with dmem_raddr for data reads.
   wire [9:0] dmem_imem_idx = dmem_raddr[11:2];
@@ -121,8 +165,13 @@ module top #(
   always @(*) begin
     case (dmem_raddr[19:16])
       4'b0000: dmem_rdata = dmem_imem_rdata;         // IMEM (.rodata reads)
-      4'b0001: dmem_rdata = dmem[dmem_raddr_idx];    // DMEM
-      4'b0011: dmem_rdata = {31'b0, tx_busy};         // UART TX status
+      4'b0001: dmem_rdata = {dmem3[dmem_raddr_idx],   // DMEM
+                              dmem2[dmem_raddr_idx],
+                              dmem1[dmem_raddr_idx],
+                              dmem0[dmem_raddr_idx]};
+      4'b0011: dmem_rdata = dmem_raddr[2]
+                             ? {31'b0, tx_busy}                       // TX status
+                             : {23'b0, rx_valid_latch, rx_data_latch}; // RX data
       default: dmem_rdata = 32'b0;
     endcase
     dmem_rready = dmem_rvalid;

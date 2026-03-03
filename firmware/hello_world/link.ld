@@ -25,6 +25,7 @@ SECTIONS {
     .bss : {
         __bss_start = .;
         *(.bss*)
+        *(.sbss*)
         *(COMMON)
         __bss_end = .;
     } > DMEM
