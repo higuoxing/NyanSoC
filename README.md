@@ -15,9 +15,7 @@ A small, formally verified RISC-V SoC.
 
 - **nyanrv** — RV32I + Zicsr soft CPU with M-mode interrupt support (MTI + MEI)
 - **UART TX/RX** — parameterised baud-rate UART with formal verification
-- **SDRAM controller** — Gowin SDRAM interface (formally verified)
 - Formally verified with [riscv-formal](https://github.com/YosysHQ/riscv-formal) and [SymbiYosys](https://github.com/YosysHQ/sby)
-- CI runs `prove` + `cover` on every push
 
 ## Directory structure
 
