@@ -9,13 +9,13 @@ firmware/**/imem_init.vh
 firmware/**/imem_rom.vh
 firmware/**/imem_data_rom.vh
 
-# Simulation build artifacts (sim/sw/)
-sim/sw/*.elf
-sim/sw/*.hex
-sim/sw/*.vvp
-sim/sw/*.vcd
-sim/sw/*.dis
-sim/sw/imem.hex
+# Simulation build artifacts (rtl/sim/sw/)
+rtl/sim/sw/*.elf
+rtl/sim/sw/*.hex
+rtl/sim/sw/*.vvp
+rtl/sim/sw/*.vcd
+rtl/sim/sw/*.dis
+rtl/sim/sw/imem.hex
 
 # Formal verification generated checks
 formal/riscv-formal/cores/nyanrv/checks/

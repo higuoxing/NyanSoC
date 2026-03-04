@@ -26,18 +26,19 @@ NyanSoC/
 │   ├── uart/
 │   │   ├── uart_tx.v     # UART transmitter
 │   │   └── uart_rx.v     # UART receiver
-│   └── gowin/
-│       └── sdram_gw2ar.v  # SDRAM controller for GW2AR embedded SDRAM
+│   ├── gowin/
+│   │   └── sdram_gw2ar.v  # SDRAM controller for GW2AR embedded SDRAM
+│   └── sim/
+│       ├── rtl/          # Simulation testbenches
+│       └── sw/           # RV32I assembly test suite (iverilog)
 ├── boards/
 │   └── tangnano20k/      # Tang Nano 20K top-level + P&R scripts (only supported board)
 ├── firmware/
 │   ├── blinky/           # LED blink (C)
 │   └── hello_world/      # "Hello, World!" over UART (C)
-├── formal/
-│   ├── nyanrv/           # riscv-formal config and wrapper for nyanrv
-│   └── Makefile          # Formal verification flow
-└── sim/
-    └── sw/               # RV32I assembly test suite (iverilog)
+└── formal/
+    ├── nyanrv/           # riscv-formal config and wrapper for nyanrv
+    └── Makefile          # Formal verification flow
 ```
 
 ## Memory map (Tang Nano 20K SoC)
@@ -88,7 +89,7 @@ make flash
 
 ## Simulation tests
 
-The `sim/sw/` test suite assembles RV32I programs with `riscv64-elf-gcc` and
+The `rtl/sim/sw/` test suite assembles RV32I programs with `riscv64-elf-gcc` and
 runs them under [Icarus Verilog](http://iverilog.icarus.com/):
 
 ```sh

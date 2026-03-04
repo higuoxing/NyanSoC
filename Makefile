@@ -36,10 +36,10 @@ help:
 
 .PHONY: sim sim-waves
 sim:
-	$(MAKE) -C sim/sw run
+	$(MAKE) -C rtl/sim/sw run
 
 sim-waves:
-	$(MAKE) -C sim/sw waves
+	$(MAKE) -C rtl/sim/sw waves
 
 # ── Formal verification ───────────────────────────────────────────────────────
 
@@ -80,4 +80,4 @@ firmware-clean:
 
 .PHONY: clean
 clean: board-clean firmware-clean
-	$(MAKE) -C sim/sw clean
+	$(MAKE) -C rtl/sim/sw clean

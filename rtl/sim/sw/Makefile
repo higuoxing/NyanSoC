@@ -1,5 +1,5 @@
 ##############################################################################
-# NyanSoC test suite - sim/sw/Makefile
+# NyanSoC test suite - rtl/sim/sw/Makefile
 #
 # Usage:
 #   make              - build all tests and run them with iverilog
@@ -27,13 +27,13 @@ LDFLAGS  := -T link.ld -march=rv32i_zicsr -mabi=ilp32 -nostartfiles -nostdlib \
              -Wl,--no-relax
 
 # Simulation sources (relative to repository root)
-PROJ_ROOT := ../..
-TB        := $(PROJ_ROOT)/sim/rtl/nyanrv_tb.v
+PROJ_ROOT := ../../..
+TB        := $(PROJ_ROOT)/rtl/sim/rtl/nyanrv_tb.v
 RTL       := $(PROJ_ROOT)/rtl/nyanrv.v
 ASM_DIR   := asm
 
 TESTS     := test_alu test_branch test_mem test_jump test_csr
-IRQ_TB    := $(PROJ_ROOT)/sim/rtl/nyanrv_irq_tb.v
+IRQ_TB    := $(PROJ_ROOT)/rtl/sim/rtl/nyanrv_irq_tb.v
 
 # Keep intermediate ELF files on build errors for easier debugging
 .PRECIOUS: %.elf

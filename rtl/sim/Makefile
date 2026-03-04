@@ -1,6 +1,6 @@
-PROJ_ROOT := ..
+PROJ_ROOT := ../..
 RTL       := $(PROJ_ROOT)/rtl
-SIM_RTL   := $(PROJ_ROOT)/sim/rtl
+SIM_RTL   := $(PROJ_ROOT)/rtl/sim/rtl
 
 .PHONY: all run_cpu run_uart clean
 
