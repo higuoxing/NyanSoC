@@ -17,11 +17,13 @@ sim: imem.hex
 prove:
 	make -C gowin prove
 	make -C uart prove
+	make -C sdspi prove
 
 .PHONY: cover
 cover:
 	make -C gowin cover
 	make -C uart cover
+	make -C sdspi cover
 
 clean:
 	rm -f imem.elf imem.bin imem.hex a.out

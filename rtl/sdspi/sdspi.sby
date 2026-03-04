@@ -1,0 +1,23 @@
+[tasks]
+cover
+prove
+
+[options]
+prove: mode prove
+cover: mode cover
+prove: depth 30
+cover: depth 80
+
+[engines]
+smtbmc z3
+
+[script]
+read -formal sdspi.v
+# Scale down to 1 MHz so the SPI engine cycles are reachable quickly.
+chparam -set CLK_FREQ_HZ 1000000 sdspi
+chparam -set SPI_CLK_DIV 1 sdspi
+chparam -set SPI_CLK_DIV_INIT 2 sdspi
+prep -top sdspi
+
+[files]
+./sdspi.v
