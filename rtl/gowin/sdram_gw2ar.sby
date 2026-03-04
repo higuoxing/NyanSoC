@@ -1,0 +1,33 @@
+[tasks]
+cover
+prove
+
+[options]
+prove: mode prove
+cover: mode cover
+prove: depth 50
+cover: depth 80
+
+[engines]
+smtbmc z3
+
+[script]
+read -formal sdram_gw2ar.v
+# Scale down all timing so the full init+read+write sequence fits in <80 cycles:
+# INIT_CYCLES = (2000 * 1) / 1000 = 2
+# T_RP=T_RFC=T_MRD=T_RCD=T_CL=T_WR = 2
+# REFRESH_INTERVAL = (4096 / 1 * 1) / 1000 = 4  (so refresh fires every 4 cycles)
+chparam -set CLOCK_FREQ_MHZ 1 sdram_gw2ar
+chparam -set INITIALIZATION_WAIT_PERIOD_NS 2000 sdram_gw2ar
+chparam -set REFRESH_PERIOD_NS 4096 sdram_gw2ar
+chparam -set REFRESH_TIMES 1 sdram_gw2ar
+chparam -set T_RP_PERIOD 2 sdram_gw2ar
+chparam -set T_RFC_PERIOD 2 sdram_gw2ar
+chparam -set T_MRD_PERIOD 2 sdram_gw2ar
+chparam -set T_RCD_PERIOD 2 sdram_gw2ar
+chparam -set T_CL_PERIOD 2 sdram_gw2ar
+chparam -set T_WR_PERIOD 2 sdram_gw2ar
+prep -top sdram_gw2ar
+
+[files]
+./sdram_gw2ar.v

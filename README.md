@@ -27,7 +27,7 @@ NyanSoC/
 │   │   ├── uart_tx.v     # UART transmitter
 │   │   └── uart_rx.v     # UART receiver
 │   └── gowin/
-│       └── sdram_ctrl.v  # SDRAM controller
+│       └── sdram_gw2ar.v  # SDRAM controller for GW2AR embedded SDRAM
 ├── boards/
 │   └── tangnano20k/      # Tang Nano 20K top-level + P&R scripts (only supported board)
 ├── firmware/

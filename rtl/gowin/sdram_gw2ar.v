@@ -10,7 +10,7 @@
 //   [ROW_WIDTH+COLUMN_WIDTH-1            : COLUMN_WIDTH]             = row
 //   [COLUMN_WIDTH-1                      : 0]                        = column
 
-module sdram_ctrl #(
+module sdram_gw2ar #(
     parameter integer DATA_WIDTH              = 32,      // {8,16,32,64}
     parameter integer BANK_WIDTH              = 2,       // {1,2}
     parameter integer ROW_WIDTH               = 11,      // {11,12,13,14}
@@ -473,4 +473,4 @@ module sdram_ctrl #(
 
 `endif  // FORMAL
 
-endmodule  // sdram_ctrl
+endmodule  // sdram_gw2ar

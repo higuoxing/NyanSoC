@@ -1,6 +1,6 @@
 .PHONY: prove cover
 prove:
-	sby -f sdram_ctrl.sby prove
+	sby -f sdram_gw2ar.sby prove
 
 cover:
-	sby -f sdram_ctrl.sby cover
+	sby -f sdram_gw2ar.sby cover
