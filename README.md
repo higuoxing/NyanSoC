@@ -57,9 +57,8 @@ NyanSoC/
 | Tool | Purpose |
 |------|---------|
 | [OSS CAD Suite](https://github.com/YosysHQ/oss-cad-suite-build) | Simulation, synthesis, formal verification |
-| [Gowin EDA](https://www.gowinsemi.com/en/support/home/) | `gowin_pack` for Tang Nano 20K bitstream |
 | [openFPGALoader](https://github.com/trabucayre/openFPGALoader) | Flashing the FPGA |
-| `riscv64-elf-gcc` | Cross-compiler for firmware and sim tests |
+| [riscv-gnu-toolchain](https://github.com/riscv-collab/riscv-gnu-toolchain) | Cross-compiler for firmware and sim tests |
 
 Source the OSS CAD Suite environment before running any make targets:
 
