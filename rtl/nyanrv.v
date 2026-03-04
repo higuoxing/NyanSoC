@@ -232,11 +232,12 @@ module nyanrv (
                      (  (mip_live[11] && CSR[mie][11])   // MEI (external, higher prio)
                       | (mip_live[7]  && CSR[mie][7]));  // MTI (timer)
 
-  reg [1:0] cpu_state;
-  localparam cpu_state_fetch = 2'b00;
-  localparam cpu_state_execute = 2'b01;
-  localparam cpu_state_store = 2'b10;
-  localparam cpu_state_load = 2'b11;
+  reg [2:0] cpu_state;
+  localparam cpu_state_fetch   = 3'b000;
+  localparam cpu_state_execute = 3'b001;
+  localparam cpu_state_store   = 3'b010;
+  localparam cpu_state_load    = 3'b011;
+  localparam cpu_state_muldiv  = 3'b100;
 
   // Valid in fetch state.
   wire [31:0] insn;
@@ -381,6 +382,16 @@ module nyanrv (
   insn_or_q     = { opcode_q, f3_q, f7_q } == { 7'b0110011, 3'b110, 7'b0000000 },
   insn_and_q    = { opcode_q, f3_q, f7_q } == { 7'b0110011, 3'b111, 7'b0000000 },
 
+  // RV32M — all share opcode=0110011, funct7=0000001
+  insn_mul_q    = { opcode_q, f3_q, f7_q } == { 7'b0110011, 3'b000, 7'b0000001 },
+  insn_mulh_q   = { opcode_q, f3_q, f7_q } == { 7'b0110011, 3'b001, 7'b0000001 },
+  insn_mulhsu_q = { opcode_q, f3_q, f7_q } == { 7'b0110011, 3'b010, 7'b0000001 },
+  insn_mulhu_q  = { opcode_q, f3_q, f7_q } == { 7'b0110011, 3'b011, 7'b0000001 },
+  insn_div_q    = { opcode_q, f3_q, f7_q } == { 7'b0110011, 3'b100, 7'b0000001 },
+  insn_divu_q   = { opcode_q, f3_q, f7_q } == { 7'b0110011, 3'b101, 7'b0000001 },
+  insn_rem_q    = { opcode_q, f3_q, f7_q } == { 7'b0110011, 3'b110, 7'b0000001 },
+  insn_remu_q   = { opcode_q, f3_q, f7_q } == { 7'b0110011, 3'b111, 7'b0000001 },
+
   insn_fence_q  = { opcode_q } == { 7'b0001111 },
   insn_ecall_q  = { opcode_q, f3_q, insn_q[31:20] } == { 7'b1110011, 3'b000, 12'b000000000000 },
   insn_ebreak_q = { opcode_q, f3_q, insn_q[31:20] } == { 7'b1110011, 3'b000, 12'b000000000001 },
@@ -416,6 +427,18 @@ module nyanrv (
   reg [ 4:0] rd_prev_q;
   reg [31:0] rd_val_prev;
   reg        write_rd_prev;
+
+  // ── RV32M divider state ───────────────────────────────────────────────────
+  // Iterative non-restoring 32-cycle divider.
+  // Shared by DIV/DIVU/REM/REMU; MUL* uses single-cycle multiply.
+  reg [31:0] div_dividend;   // unsigned dividend (sign-adjusted before start)
+  reg [31:0] div_divisor;    // unsigned divisor
+  reg [63:0] div_partial;    // {remainder[31:0], quotient[31:0]} shift register
+  reg [ 5:0] div_cnt;        // counts 32 down to 0
+  reg        div_neg_quot;   // quotient needs sign flip
+  reg        div_neg_rem;    // remainder needs sign flip
+  reg        div_is_rem;     // 1 = want remainder, 0 = want quotient
+  reg        div_by_zero;    // divisor was zero
 
 `ifdef RISCV_FORMAL
   // RVFI internal state
@@ -458,7 +481,8 @@ module nyanrv (
   integer reg_idx;
   initial begin
     for (reg_idx = 0; reg_idx < mcsr_max; reg_idx = reg_idx + 1)
-      CSR[reg_idx] = (reg_idx == misa) ? 32'h4000_0100 : 32'b0;
+      // misa: MXL=01 (RV32), extensions I (bit 8) + M (bit 12)
+      CSR[reg_idx] = (reg_idx == misa) ? 32'h4000_1100 : 32'b0;
   end
 
   always @(posedge i_clk) begin
@@ -681,6 +705,53 @@ module nyanrv (
                   dmem_wdata <= 32'b0;
                 end
               endcase  // case (f3)
+            end else if (opcode == 7'b0110011 && f7 == 7'b0000001 &&
+                         (f3 == 3'b100 || f3 == 3'b101 ||
+                          f3 == 3'b110 || f3 == 3'b111)) begin
+`ifdef RISCV_FORMAL_ALTOPS
+              // In ALTOPS mode DIV/REM are single-cycle; go straight to execute.
+              cpu_state <= cpu_state_execute;
+`else
+              // DIV/DIVU/REM/REMU — dispatch to iterative divider state.
+              // Latch operands and set up sign/zero flags here in fetch so
+              // the divider can start on the very next cycle.
+              begin : div_setup
+                reg        s1_neg, s2_neg;
+                reg [31:0] abs_rs1, abs_rs2;
+                reg [ 5:0] clz;
+                reg [31:0] tmp;
+                s1_neg  = (f3 == 3'b100 || f3 == 3'b110) && rf_rs1_f[31];
+                s2_neg  = (f3 == 3'b100 || f3 == 3'b110) && rf_rs2_f[31];
+                abs_rs1 = s1_neg ? -rf_rs1_f : rf_rs1_f;
+                abs_rs2 = s2_neg ? -rf_rs2_f : rf_rs2_f;
+
+                // Count leading zeros of abs_rs1 to skip trivial steps.
+                // Each leading zero is a step where the trial subtraction
+                // always borrows — pre-shifting eliminates them entirely.
+                clz = 6'd0;
+                tmp = abs_rs1;
+                if (tmp[31:16] == 16'b0) begin clz = clz + 6'd16; tmp = tmp << 16; end
+                if (tmp[31:24] ==  8'b0) begin clz = clz + 6'd8;  tmp = tmp <<  8; end
+                if (tmp[31:28] ==  4'b0) begin clz = clz + 6'd4;  tmp = tmp <<  4; end
+                if (tmp[31:30] ==  2'b0) begin clz = clz + 6'd2;  tmp = tmp <<  2; end
+                if (tmp[31]    ==  1'b0) begin clz = clz + 6'd1;                   end
+
+                div_dividend  <= abs_rs1;
+                div_divisor   <= abs_rs2;
+                // Pre-shift partial left by clz so the first meaningful
+                // dividend bit is already at the top of the lower half.
+                div_partial   <= {32'b0, abs_rs1} << clz;
+                // Steps needed = 32 - clz.  When abs_rs1 == 0, clz == 32
+                // and div_cnt starts at 0, falling through immediately with
+                // quotient = 0 and remainder = 0 (correct per spec).
+                div_cnt       <= 6'd32 - clz;
+                div_is_rem    <= (f3 == 3'b110 || f3 == 3'b111);
+                div_by_zero   <= (rf_rs2_f == 32'b0);
+                div_neg_quot  <= (f3 == 3'b100) && (s1_neg ^ s2_neg);
+                div_neg_rem   <= (f3 == 3'b110) && s1_neg;
+              end
+              cpu_state <= cpu_state_muldiv;
+`endif
             end else begin
               // All other opcodes (including load/store with invalid funct3)
               // are handled in cpu_state_execute where the combinational `trap`
@@ -1069,6 +1140,78 @@ module nyanrv (
 `endif
           end
         end
+        cpu_state_muldiv: begin
+          // ── Iterative non-restoring divider ─────────────────────────────
+          // Each cycle shifts div_partial left by 1 and subtracts div_divisor
+          // from the upper 32 bits; if the result is non-negative the LSB of
+          // the quotient (lower 32 bits) is set.  After 32 cycles the lower
+          // 32 bits hold the quotient and the upper 32 bits hold the remainder.
+          //
+          // div_by_zero is handled per the RISC-V spec:
+          //   DIV/DIVU  of x by 0 → -1 (all ones)
+          //   REM/REMU  of x by 0 → x
+          if (div_cnt == 6'd0) begin
+            // Writeback is handled combinatorially in always@(*) above.
+            write_rd_prev <= 1'b0;
+            pc            <= pc_next;
+            cpu_state     <= cpu_state_fetch;
+`ifdef RISCV_FORMAL
+            rvfi_valid      <= 1'b1;
+            rvfi_order      <= rvfi_order_cnt;
+            rvfi_order_cnt  <= rvfi_order_cnt + 1;
+            rvfi_insn       <= insn_q;
+            rvfi_trap       <= 1'b0;
+            rvfi_halt       <= 1'b0;
+            rvfi_intr       <= rvfi_intr_q;
+            rvfi_intr_q     <= 1'b0;
+            rvfi_mode       <= 2'b11;
+            rvfi_ixl        <= 2'b01;
+            rvfi_rs1_addr   <= rs1_q;
+            rvfi_rs2_addr   <= rs2_q;
+            rvfi_rs1_rdata  <= (rs1_q == 5'b0) ? 32'b0 : rvfi_rs1_rdata_q;
+            rvfi_rs2_rdata  <= (rs2_q == 5'b0) ? 32'b0 : rvfi_rs2_rdata_q;
+            // rd writeback value is the same as what always@(*) computes into x_wdata.
+            rvfi_rd_addr  <= (rd_q != 5'b0) ? rd_q    : 5'b0;
+            rvfi_rd_wdata <= (rd_q != 5'b0) ? x_wdata : 32'b0;
+            rvfi_pc_rdata   <= pc_q;
+            rvfi_pc_wdata   <= pc_next;
+            rvfi_mem_addr   <= 32'b0;
+            rvfi_mem_rmask  <= 4'b0;
+            rvfi_mem_wmask  <= 4'b0;
+            rvfi_mem_rdata  <= 32'b0;
+            rvfi_mem_wdata  <= 32'b0;
+            rvfi_csr_mstatus_rmask  <= 32'b0; rvfi_csr_mstatus_wmask  <= 32'b0;
+            rvfi_csr_mstatus_rdata  <= rvfi_csr_mstatus_pre; rvfi_csr_mstatus_wdata  <= rvfi_csr_mstatus_pre;
+            rvfi_csr_mtvec_rmask    <= 32'b0; rvfi_csr_mtvec_wmask    <= 32'b0;
+            rvfi_csr_mtvec_rdata    <= rvfi_csr_mtvec_pre; rvfi_csr_mtvec_wdata    <= rvfi_csr_mtvec_pre;
+            rvfi_csr_mscratch_rmask <= 32'b0; rvfi_csr_mscratch_wmask <= 32'b0;
+            rvfi_csr_mscratch_rdata <= rvfi_csr_mscratch_pre; rvfi_csr_mscratch_wdata <= rvfi_csr_mscratch_pre;
+            rvfi_csr_mepc_rmask     <= 32'b0; rvfi_csr_mepc_wmask     <= 32'b0;
+            rvfi_csr_mepc_rdata     <= rvfi_csr_mepc_pre; rvfi_csr_mepc_wdata     <= rvfi_csr_mepc_pre;
+            rvfi_csr_mcause_rmask   <= 32'b0; rvfi_csr_mcause_wmask   <= 32'b0;
+            rvfi_csr_mcause_rdata   <= rvfi_csr_mcause_pre; rvfi_csr_mcause_wdata   <= rvfi_csr_mcause_pre;
+            rvfi_csr_mtval_rmask    <= 32'b0; rvfi_csr_mtval_wmask    <= 32'b0;
+            rvfi_csr_mtval_rdata    <= rvfi_csr_mtval_pre; rvfi_csr_mtval_wdata    <= rvfi_csr_mtval_pre;
+`endif
+          end else begin
+            // One divider step: shift left, trial-subtract.
+            begin : div_step
+              reg [32:0] partial_hi_next;
+              reg [63:0] shifted;
+              shifted          = {div_partial[62:0], 1'b0};
+              partial_hi_next  = {1'b0, shifted[63:32]} - {1'b0, div_divisor};
+              if (!partial_hi_next[32]) begin
+                // Subtraction didn't borrow → quotient bit = 1.
+                div_partial <= {partial_hi_next[31:0], shifted[31:0] | 32'b1};
+              end else begin
+                // Subtraction borrowed → quotient bit = 0, keep shifted value.
+                div_partial <= shifted;
+              end
+            end
+            div_cnt <= div_cnt - 1'b1;
+          end
+        end
+
       endcase  // case (cpu_state)
     end
   end  // always @ (posedge i_clk)
@@ -1200,6 +1343,48 @@ module nyanrv (
     end else if (insn_and_q) begin
       write_rd = 1'b1;
       rd_val   = rs1_val & rs2_val;
+    end else if (insn_mul_q) begin
+      write_rd = 1'b1;
+`ifdef RISCV_FORMAL_ALTOPS
+      rd_val   = (rs1_val + rs2_val) ^ 32'h5876063e;
+`else
+      rd_val   = rs1_val * rs2_val;
+`endif
+    end else if (insn_mulh_q) begin
+      write_rd = 1'b1;
+`ifdef RISCV_FORMAL_ALTOPS
+      rd_val   = (rs1_val + rs2_val) ^ 32'hf6583fb7;
+`else
+      rd_val   = $signed({{32{rs1_val[31]}}, rs1_val} *
+                         {{32{rs2_val[31]}}, rs2_val}) >>> 32;
+`endif
+    end else if (insn_mulhsu_q) begin
+      write_rd = 1'b1;
+`ifdef RISCV_FORMAL_ALTOPS
+      rd_val   = (rs1_val - rs2_val) ^ 32'hecfbe137;
+`else
+      rd_val   = ($signed({{32{rs1_val[31]}}, rs1_val}) *
+                  $signed({1'b0, rs2_val})) >> 32;
+`endif
+    end else if (insn_mulhu_q) begin
+      write_rd = 1'b1;
+`ifdef RISCV_FORMAL_ALTOPS
+      rd_val   = (rs1_val + rs2_val) ^ 32'h949ce5e8;
+`else
+      rd_val   = ({32'b0, rs1_val} * {32'b0, rs2_val}) >> 32;
+`endif
+    end else if (insn_div_q || insn_divu_q || insn_rem_q || insn_remu_q) begin
+`ifdef RISCV_FORMAL_ALTOPS
+      // In ALTOPS mode the result is computed in one cycle (just add/sub + XOR)
+      // and written back here like a normal ALU instruction.
+      write_rd = 1'b1;
+      if      (insn_div_q)  rd_val = (rs1_val - rs2_val) ^ 32'h7f8529ec;
+      else if (insn_divu_q) rd_val = (rs1_val - rs2_val) ^ 32'h10e8fd70;
+      else if (insn_rem_q)  rd_val = (rs1_val - rs2_val) ^ 32'h8da68fa5;
+      else                  rd_val = (rs1_val - rs2_val) ^ 32'h3138d0e1;
+`else
+      // Real DIV/REM complete in cpu_state_muldiv; nothing to compute here.
+`endif
     end else
     if (insn_ecall_q) begin
     end else
@@ -1309,6 +1494,19 @@ module nyanrv (
         x_we    = 1'b1;
         x_waddr = rd_q;
         x_wdata = load_wdata;
+      end
+    end
+    // Muldiv state: write result when divider finishes (div_cnt == 0).
+    if (cpu_state == cpu_state_muldiv && div_cnt == 6'd0 && rd_q != 5'b0) begin
+      begin : div_wb
+        reg [31:0] quot_wb, rem_wb;
+        quot_wb = div_by_zero ? 32'hffff_ffff
+                : (div_neg_quot ? -div_partial[31:0] : div_partial[31:0]);
+        rem_wb  = div_by_zero ? div_dividend
+                : (div_neg_rem  ? -div_partial[63:32] : div_partial[63:32]);
+        x_we    = 1'b1;
+        x_waddr = rd_q;
+        x_wdata = div_is_rem ? rem_wb : quot_wb;
       end
     end
   end  // always @ (*)

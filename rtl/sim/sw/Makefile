@@ -10,6 +10,7 @@
 #   make test_mem     - build+run only the memory test
 #   make test_jump    - build+run only the jump test
 #   make test_csr     - build+run only the CSR test
+#   make test_mext    - build+run only the M-extension test
 #   make clean        - remove all build artifacts
 ##############################################################################
 
@@ -21,9 +22,9 @@ OBJCOPY := $(CROSS)-objcopy
 OBJDUMP := $(CROSS)-objdump
 
 # Compiler/assembler flags
-# rv32i_zicsr: Zicsr is needed for CSR instructions (required by modern binutils)
-ASFLAGS  := -march=rv32i_zicsr -mabi=ilp32 -nostartfiles -nostdlib
-LDFLAGS  := -T link.ld -march=rv32i_zicsr -mabi=ilp32 -nostartfiles -nostdlib \
+# rv32im_zicsr: M extension required for MUL/DIV instructions
+ASFLAGS  := -march=rv32im_zicsr -mabi=ilp32 -nostartfiles -nostdlib
+LDFLAGS  := -T link.ld -march=rv32im_zicsr -mabi=ilp32 -nostartfiles -nostdlib \
              -Wl,--no-relax
 
 # Simulation sources (relative to repository root)
@@ -32,7 +33,7 @@ TB        := $(PROJ_ROOT)/rtl/sim/rtl/nyanrv_tb.v
 RTL       := $(PROJ_ROOT)/rtl/nyanrv.v
 ASM_DIR   := asm
 
-TESTS     := test_alu test_branch test_mem test_jump test_csr
+TESTS     := test_alu test_branch test_mem test_jump test_csr test_mext
 IRQ_TB    := $(PROJ_ROOT)/rtl/sim/rtl/nyanrv_irq_tb.v
 
 # Keep intermediate ELF files on build errors for easier debugging
