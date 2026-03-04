@@ -13,8 +13,10 @@ A small, formally verified RISC-V SoC.
 
 ## Features
 
-- **nyanrv** — RV32I + Zicsr soft CPU with M-mode interrupt support (MTI + MEI)
+- **nyanrv** — RV32IM + Zicsr soft CPU with M-mode interrupt support (MTI + MEI)
 - **UART TX/RX** — parameterised baud-rate UART with formal verification
+- **SDRAM controller** — for GW2AR-18 embedded SDRAM (Tang Nano 20K)
+- **SPI SD card controller** — SPI-mode SD card with full init sequence and block read/write
 - Formally verified with [riscv-formal](https://github.com/YosysHQ/riscv-formal) and [SymbiYosys](https://github.com/YosysHQ/sby)
 
 ## Directory structure
@@ -97,7 +99,7 @@ make sim-waves    # run first test and dump a VCD waveform
 ```
 
 Individual tests: `test_alu`, `test_branch`, `test_mem`, `test_jump`,
-`test_csr`, `test_irq`.
+`test_csr`, `test_irq`, `test_mext`.
 
 ## Formal verification
 
