@@ -19,6 +19,11 @@ rtl/sim/sw/imem.hex
 
 # Formal verification generated checks
 formal/riscv-formal/cores/nyanrv/checks/
+*_prove
+*_cover
+rtl/sdspi/sdspi
+rtl/uart/uart_tx
+rtl/uart/uart_rx
 
 # macOS
 .DS_Store
