@@ -8,12 +8,15 @@ TOP_MODULE ?= top
 SOURCES   := $(ROOT_DIR)/rtl/nyanrv.v
 SOURCES   += $(ROOT_DIR)/rtl/uart/uart_rx.v
 SOURCES   += $(ROOT_DIR)/rtl/uart/uart_tx.v
+SOURCES   += $(ROOT_DIR)/rtl/sdspi/sdspi.v
 SOURCES   += $(TOP_MODULE).v
 
 all: $(BOARD).fs
 
-# ── Blinky hex (instruction memory image) ────────────────────────────────────
-imem.hex imem_rom.vh imem_data_rom.vh:
+# ── Firmware hex (instruction memory image) ──────────────────────────────────
+# Always re-run so that switching FW= picks up fresh output immediately.
+.PHONY: FORCE
+imem.hex imem_rom.vh imem_data_rom.vh: FORCE
 	make -C $(PROG_DIR)
 	cp $(PROG_DIR)/imem.hex .
 	cp $(PROG_DIR)/imem_rom.vh .

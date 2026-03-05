@@ -3,23 +3,23 @@ CC      := $(CROSS)-gcc
 OBJCOPY := $(CROSS)-objcopy
 OBJDUMP := $(CROSS)-objdump
 
-CFLAGS  := -march=rv32i -mabi=ilp32 -Os -ffreestanding -nostdlib \
+CFLAGS  := -march=rv32im -mabi=ilp32 -Os -ffreestanding -nostdlib \
             -nostartfiles -Wall -Wextra
-LDFLAGS := -T link.ld -march=rv32i -mabi=ilp32 -nostdlib \
+LDFLAGS := -T link.ld -march=rv32im -mabi=ilp32 -nostdlib \
             -nostartfiles -Wl,--no-relax
 
-SRCS    := start.S echo.c
+SRCS    := start.S sdtest.c
+
+AWK_HEXTODEC := function hextodec(h,  i,v,c){v=0;h=toupper(h);for(i=1;i<=length(h);i++){c=index("0123456789ABCDEF",substr(h,i,1))-1;v=v*16+c};return v} {gsub(/\r/,"",$$0)}
 
 .PHONY: all clean dis
 
 all: imem.hex imem_init.vh imem_rom.vh imem_data_rom.vh
 
-imem.hex: echo.elf
+imem.hex: sdtest.elf
 	$(OBJCOPY) -O verilog --verilog-data-width=4 \
 	    --only-section=.text --only-section=.rodata \
 	    $< $@
-
-AWK_HEXTODEC := function hextodec(h,  i,v,c){v=0;h=toupper(h);for(i=1;i<=length(h);i++){c=index("0123456789ABCDEF",substr(h,i,1))-1;v=v*16+c};return v} {gsub(/\r/,"",$$0)}
 
 # imem_init.vh: explicit Verilog initial assignments (for simulation).
 imem_init.vh: imem.hex
@@ -44,11 +44,11 @@ imem_data_rom.vh: imem.hex
 	     {for(i=1;i<=NF;i++){gsub(/\r/,"",$$i); printf "      10'\''d%d: dmem_imem_rdata = 32'\''h%s;\n", addr++, toupper($$i)}}' \
 	    $< > $@
 
-echo.elf: $(SRCS) link.ld
+sdtest.elf: $(SRCS) link.ld
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(SRCS)
 
-dis: echo.elf
+dis: sdtest.elf
 	$(OBJDUMP) -d $<
 
 clean:
-	rm -f echo.elf imem.hex imem_init.vh imem_rom.vh imem_data_rom.vh
+	rm -f sdtest.elf imem.hex imem_init.vh imem_rom.vh imem_data_rom.vh

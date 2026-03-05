@@ -3,19 +3,24 @@
 
 /* NyanSoC top-level SoC for Tang Nano 20K
  *
- * Memory map (all regions 4 KiB, indexed by addr[11:2]):
+ * Memory map (all regions, indexed by addr[11:2]):
  *   0x0000_0000 - 0x0000_0FFF  IMEM (1 KiB words, combinatorial LUT-ROM)
  *   0x0001_0000 - 0x0001_0FFF  DMEM (1 KiB words, BRAM, read/write)
  *   0x0002_0000                GPIO output register
  *                                 bits [5:0] = LED[5:0] (write 1 = on)
  *   0x0003_0000                UART RX  read: {23'b0, valid, data[7:0]}  (clears valid)
  *   0x0003_0004                UART TX  write: send byte; read: {31'b0, busy}
+ *   0x0004_0000                SD status  read: {18'b0, dbg_state[5:0], rd_valid, wr_ready, err, busy, init_done}
+ *   0x0004_0004                SD command write: bit0=rd, bit1=wr (single-cycle strobe)
+ *   0x0004_0008                SD address read/write: 32-bit block address
+ *   0x0004_000C                SD data FIFO: write=push byte, read=pop byte
  *
  * Address decode uses bits [19:16]:
  *   4'b0000 -> IMEM  (only via instruction bus)
  *   4'b0001 -> DMEM
  *   4'b0010 -> GPIO
  *   4'b0011 -> UART (RX at offset 0, TX at offset 4)
+ *   4'b0100 -> SD card controller
  *
  * Reset: i_rst_n is the S1 button (active-low, pulled high at rest).
  * A power-on reset shift register (por_sr) guarantees reset is held for
@@ -31,7 +36,13 @@ module top #(
     input  wire       i_rst_n,  // S1 button: 1 when pressed, 0 at rest (pulled low)
     output wire [5:0] o_led,    // active-low LEDs (6 monochromatic)
     input  wire       i_rx,     // UART RX
-    output wire       o_tx      // UART TX
+    output wire       o_tx,     // UART TX
+
+    // TF (microSD) card — SPI mode
+    output wire       o_spi_clk,
+    output wire       o_spi_mosi,
+    input  wire       i_spi_miso,
+    output wire       o_spi_cs_n
 );
 
   // ── Parameters ────────────────────────────────────────────────────────────
@@ -134,7 +145,7 @@ module top #(
   reg       rx_valid_latch;
   reg [7:0] rx_data_latch;
 
-  always @(posedge i_clk or negedge rst_n) begin
+  always @(posedge i_clk) begin
     if (!rst_n) begin
       rx_valid_latch <= 1'b0;
       rx_data_latch  <= 8'b0;
@@ -150,6 +161,85 @@ module top #(
     end
   end
 
+  // ── SD card controller (sdspi) ────────────────────────────────────────────
+  // Register map at 0x0004_xxxx (bits [3:2] select register):
+  //   +0x0  status  [R]   {29'b0, o_err, o_busy, o_init_done}
+  //   +0x4  command [W]   bit0=i_rd, bit1=i_wr  (single-cycle strobe)
+  //   +0x8  address [R/W] 32-bit block address
+  //   +0xC  data    [R/W] write=push byte to TX FIFO, read=pop byte from RX FIFO
+
+  wire sd_region_r = dmem_rvalid && (dmem_raddr[19:16] == 4'b0100);
+  wire sd_region_w = dmem_wvalid && (dmem_waddr[19:16] == 4'b0100);
+
+  wire        sd_init_done;
+  wire        sd_busy;
+  wire        sd_err;
+  wire [ 5:0] sd_dbg_state;
+  wire [ 7:0] sd_dbg_rx;
+  wire [ 5:0] sd_dbg_prev;
+
+  reg         sd_rd;
+  reg         sd_wr;
+  reg  [31:0] sd_addr_reg;
+
+  wire        sd_rd_valid;
+  wire [ 7:0] sd_rd_data;
+  reg         sd_rd_ack;
+
+  wire        sd_wr_ready;
+
+  // Command register write (offset +0x4): pulse i_rd / i_wr for one cycle.
+  wire sd_cmd_w = sd_region_w && (dmem_waddr[3:2] == 2'b01) && dmem_wstrb[0];
+
+  always @(posedge i_clk) begin
+    if (!rst_n) begin
+      sd_rd      <= 1'b0;
+      sd_wr      <= 1'b0;
+      sd_addr_reg<= 32'd0;
+    end else begin
+      sd_rd <= 1'b0;
+      sd_wr <= 1'b0;
+      if (sd_cmd_w) begin
+        sd_rd <= dmem_wdata[0];
+        sd_wr <= dmem_wdata[1];
+      end
+      // Address register write (offset +0x8).
+      if (sd_region_w && (dmem_waddr[3:2] == 2'b10))
+        sd_addr_reg <= dmem_wdata;
+    end
+  end
+
+  // Data FIFO read: pop one byte when CPU reads offset +0xC.
+  always @(*) sd_rd_ack = sd_region_r && (dmem_raddr[3:2] == 2'b11);
+
+  sdspi #(
+      .CLK_FREQ_HZ   (CLK_FREQ),
+      .SPI_CLK_DIV   (2),         // 27 MHz / 4 = 6.75 MHz
+      .SPI_CLK_DIV_INIT(68)       // 27 MHz / 136 ≈ 199 kHz during init
+  ) u_sdspi (
+      .i_clk      (i_clk),
+      .i_rst_n    (rst_n),
+      .o_init_done(sd_init_done),
+      .o_busy     (sd_busy),
+      .o_err      (sd_err),
+      .i_rd       (sd_rd),
+      .i_addr     (sd_addr_reg),
+      .o_rd_valid (sd_rd_valid),
+      .o_rd_data  (sd_rd_data),
+      .i_rd_ack   (sd_rd_ack),
+      .i_wr       (sd_wr),
+      .i_wr_data  (dmem_wdata[7:0]),
+      .i_wr_valid (sd_region_w && (dmem_waddr[3:2] == 2'b11) && dmem_wstrb[0]),
+      .o_wr_ready (sd_wr_ready),
+      .o_spi_cs_n (o_spi_cs_n),
+      .o_spi_clk  (o_spi_clk),
+      .o_spi_mosi (o_spi_mosi),
+      .i_spi_miso   (i_spi_miso),
+      .o_dbg_state  (sd_dbg_state),
+      .o_dbg_rx     (sd_dbg_rx),
+      .o_dbg_prev   (sd_dbg_prev)
+  );
+
   // ── IMEM data-path read (for .rodata accessed via data bus) ──────────────
   // The same LUT-ROM is read combinatorially with dmem_raddr for data reads.
   wire [9:0] dmem_imem_idx = dmem_raddr[11:2];
@@ -162,16 +252,32 @@ module top #(
   end
 
   // ── Data-bus read mux ─────────────────────────────────────────────────────
+  // Status word bit layout:
+  //  [31:26] unused
+  //  [25:20] dbg_prev  — state before entering S_ERROR
+  //  [19:12] dbg_rx    — last SPI rx byte when error occurred
+  //  [11: 6] dbg_state — current FSM state
+  //  [    5] rd_valid
+  //  [    4] (unused, was rd_valid bit 4 — shift to keep low 5 as before)
+  // Redefine compact layout to keep firmware bit defs unchanged (bits [4:0]):
+  //  [4] rd_valid, [3] wr_ready, [2] err, [1] busy, [0] init_done
+  wire [31:0] sd_status_word = {7'b0, sd_dbg_prev, sd_dbg_rx, sd_dbg_state,
+                                sd_rd_valid, sd_wr_ready, sd_err, sd_busy, sd_init_done};
+  wire [31:0] sd_rd_mux = (dmem_raddr[3:2] == 2'b00) ? sd_status_word :
+                           (dmem_raddr[3:2] == 2'b10) ? sd_addr_reg    :
+                           (dmem_raddr[3:2] == 2'b11) ? {24'b0, sd_rd_data} : 32'b0;
+
   always @(*) begin
     case (dmem_raddr[19:16])
-      4'b0000: dmem_rdata = dmem_imem_rdata;         // IMEM (.rodata reads)
-      4'b0001: dmem_rdata = {dmem3[dmem_raddr_idx],   // DMEM
+      4'b0000: dmem_rdata = dmem_imem_rdata;
+      4'b0001: dmem_rdata = {dmem3[dmem_raddr_idx],
                               dmem2[dmem_raddr_idx],
                               dmem1[dmem_raddr_idx],
                               dmem0[dmem_raddr_idx]};
       4'b0011: dmem_rdata = dmem_raddr[2]
-                             ? {31'b0, tx_busy}                       // TX status
-                             : {23'b0, rx_valid_latch, rx_data_latch}; // RX data
+                             ? {31'b0, tx_busy}
+                             : {23'b0, rx_valid_latch, rx_data_latch};
+      4'b0100: dmem_rdata = sd_rd_mux;
       default: dmem_rdata = 32'b0;
     endcase
     dmem_rready = dmem_rvalid;
@@ -181,7 +287,7 @@ module top #(
   wire gpio_wsel = dmem_wvalid && (dmem_waddr[19:16] == 4'b0010);
 
   reg [5:0] gpio_out;
-  always @(posedge i_clk or negedge rst_n) begin
+  always @(posedge i_clk) begin
     if (!rst_n) gpio_out <= 6'b000000;
     else if (gpio_wsel && dmem_wstrb[0]) gpio_out <= dmem_wdata[5:0];
   end
