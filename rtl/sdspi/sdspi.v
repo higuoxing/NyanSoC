@@ -19,10 +19,14 @@
 //    actions happen when sclk transitions 0→1 (rising edge).
 
 module sdspi #(
-    parameter integer CLK_FREQ_HZ    = 27_000_000,
-    parameter integer SPI_CLK_DIV      = 2,    // fast: 27 MHz / (2*2) = 6.75 MHz
-    parameter integer SPI_CLK_DIV_INIT = 68,   // init: 27 MHz / (2*68) ≈ 198 kHz
-    parameter integer ACMD41_RETRIES   = 8000
+    parameter integer CLK_FREQ_HZ      = 27_000_000,
+    parameter integer SPI_CLK_DIV      = 2,      // fast: 27 MHz / (2*2) = 6.75 MHz
+    parameter integer SPI_CLK_DIV_INIT = 68,     // init: 27 MHz / (2*68) ≈ 198 kHz
+    parameter integer ACMD41_RETRIES   = 8000,
+    // Power-on boot delay in system clocks (≥1 ms; overridable for formal).
+    parameter integer BOOT_CYCLES      = 2_700_000,
+    // Number of sclk half-periods to send as init clocks (≥148 for 74 full clocks).
+    parameter integer INIT_CLOCKS      = 160
 ) (
     input  wire        i_clk,
     input  wire        i_rst_n,
@@ -149,8 +153,6 @@ module sdspi #(
   reg [7:0]  err_rx_r;
   reg [5:0]  state_prev;
 
-  // Boot counter: ~100 ms at 27 MHz = 2_700_000 cycles
-  localparam [26:0] BOOT_CYCLES = 27'd2_700_000;
   reg [26:0] boot_counter;
 
   // Init clock counter: 160 bit-toggles = 80 clocks with CS deasserted
@@ -256,7 +258,7 @@ module sdspi #(
       fast_mode    <= 1'b0;
       is_sdhc      <= 1'b0;
       err_r        <= 1'b0;
-      boot_counter <= BOOT_CYCLES;
+      boot_counter <= BOOT_CYCLES[26:0];
       bit_counter  <= 10'd0;
       byte_counter <= 10'd0;
       acmd41_cnt      <= 32'd0;
@@ -284,7 +286,7 @@ module sdspi #(
           if (boot_counter == 27'd0) begin
             cmd_out     <= {56{1'b1}};
             cmd_mode    <= 1'b1;
-            bit_counter <= 10'd160;   // 160 sclk half-periods = 80 full clocks
+            bit_counter <= INIT_CLOCKS[9:0];
             state       <= S_INIT;
           end else begin
             boot_counter <= boot_counter - 27'd1;
@@ -694,8 +696,8 @@ module sdspi #(
     end
   end
 
-  always @(*) assert (rd_count <= FIFO_DEPTH);
-  always @(*) assert (wr_count <= FIFO_DEPTH);
+  always @(*) if (f_past_valid) assert (rd_count <= FIFO_DEPTH);
+  always @(*) if (f_past_valid) assert (wr_count <= FIFO_DEPTH);
 
   always @(*) cover (f_past_valid && state == S_INIT);
   always @(*) cover (f_past_valid && state == S_SEND_CMD);

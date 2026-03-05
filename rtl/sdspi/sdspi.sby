@@ -6,18 +6,23 @@ prove
 prove: mode prove
 cover: mode cover
 prove: depth 30
-cover: depth 80
+# Cover depth: with BOOT_CYCLES=1, INIT_CLOCKS=2, SPI_CLK_DIV_INIT=1
+# S_BOOT(1) + S_INIT(2 ticks) + S_SEND_CMD(a few edges) = ~20 steps to
+# reach S_INIT and S_SEND_CMD.  Use 30 to give solver headroom.
+cover: depth 30
 
 [engines]
 smtbmc z3
 
 [script]
 read -formal sdspi.v
-# Scale down SPI dividers so SPI byte transfers complete within the cover depth.
-# SPI_CLK_DIV=1 and SPI_CLK_DIV_INIT=1 give 16 system cycles per byte (minimum).
+# Scale down all timing parameters so states are reachable within cover depth.
 chparam -set CLK_FREQ_HZ 1000000 sdspi
 chparam -set SPI_CLK_DIV 1 sdspi
 chparam -set SPI_CLK_DIV_INIT 1 sdspi
+chparam -set BOOT_CYCLES 1 sdspi
+chparam -set INIT_CLOCKS 2 sdspi
+chparam -set ACMD41_RETRIES 0 sdspi
 prep -top sdspi
 
 [files]
