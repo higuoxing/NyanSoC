@@ -206,31 +206,73 @@ module nyanrv (
   wire [31:0] rf_rs1_f, rf_rs2_f;  // fetch-time: for address calc & store data
   wire [31:0] rf_rs1_x, rf_rs2_x;  // execute-time: for ALU operands
 
-  reg [31:0] CSR[0:10];
-  localparam mstatus = 0;
+  reg [31:0] CSR[0:19];
+  // M-mode CSRs (indices 0–10, unchanged)
+  localparam mstatus  = 0;
   localparam mnstatus = 1;
-  localparam mtvec = 2;
-  localparam mepc = 3;
-  localparam mcause = 4;
-  localparam mhartid = 5;
-  localparam misa = 6;
-  localparam mie = 7;
+  localparam mtvec    = 2;
+  localparam mepc     = 3;
+  localparam mcause   = 4;
+  localparam mhartid  = 5;
+  localparam misa     = 6;
+  localparam mie      = 7;
   localparam mscratch = 8;
-  localparam mtval = 9;
-  localparam mip = 10;
-  localparam mcsr_max = 11;
+  localparam mtval    = 9;
+  localparam mip      = 10;
+  // Delegation registers (indices 11–12)
+  localparam medeleg  = 11;  // machine exception delegation
+  localparam mideleg  = 12;  // machine interrupt delegation
+  // S-mode CSRs (indices 13–19)
+  localparam sstatus  = 13;  // supervisor status (view of mstatus S-mode fields)
+  localparam stvec    = 14;  // supervisor trap vector
+  localparam sip      = 15;  // supervisor interrupt pending
+  localparam sie      = 16;  // supervisor interrupt enable
+  localparam sscratch = 17;  // supervisor scratch
+  localparam sepc     = 18;  // supervisor exception PC
+  localparam scause   = 19;  // supervisor cause
+  // stval and satp share storage with sepc/scause slots via separate regs below
+  localparam mcsr_max = 20;
+
+  // S-mode CSRs that don't fit neatly into the array (stval, satp)
+  reg [31:0] stval_r;   // supervisor trap value
+  reg [31:0] satp_r;    // supervisor address translation (MODE + ASID + PPN)
+
+  // Privilege level: 2'b11=M, 2'b01=S, 2'b00=U (U not implemented yet)
+  reg [1:0] prv;
   // }}
 
-  // mip is read-only: MTIP and MEIP are wired to hardware inputs.
-  // All other bits are zero.  CSR writes to mip are accepted by the register
-  // file for the remaining writable bits but the two pending bits always
-  // reflect the input pins.
-  wire [31:0] mip_live = {20'b0, i_irq_external, 3'b0, i_irq_timer, 3'b0, 4'b0};
+  // mip_live: MTIP/MEIP wired to hardware; STIP/SEIP are software-settable
+  // bits in mip (bits 5 and 9) — stored in CSR[mip] and ORed with hardware.
+  wire [31:0] mip_live = {20'b0, i_irq_external, 3'b0, i_irq_timer, 3'b0, 4'b0}
+                       | (CSR[mip] & 32'h0000_0222);  // SEIP[9], STIP[5], SSIP[1]
 
-  // Interrupt pending: global enable AND at least one source enabled+pending.
-  wire irq_pending = CSR[mstatus][3] &&
-                     (  (mip_live[11] && CSR[mie][11])   // MEI (external, higher prio)
-                      | (mip_live[7]  && CSR[mie][7]));  // MTI (timer)
+  // sstatus is a restricted view of mstatus (S-mode visible fields).
+  // SIE=mstatus[1], SPIE=mstatus[5], SPP=mstatus[8], SUM/MXR/SD as needed.
+  wire [31:0] sstatus_live = CSR[mstatus] & 32'h800d_e122;
+
+  // sip_live: supervisor interrupt pending = mip & mideleg
+  wire [31:0] sip_live = mip_live & CSR[mideleg];
+
+  // sie_live: supervisor interrupt enable = mie & mideleg
+  wire [31:0] sie_live = CSR[mie] & CSR[mideleg];
+
+  // Interrupt pending for M-mode: MIE set, in M-mode, and unmasked M-mode IRQ.
+  // An interrupt is taken in M-mode if:
+  //   - current prv < M, OR (prv == M AND mstatus.MIE)
+  //   - AND the interrupt is not delegated to S-mode (mideleg bit clear)
+  wire m_irq_enabled = (prv < 2'b11) || CSR[mstatus][3];
+  wire m_irq_pending = m_irq_enabled &&
+                       (  (mip_live[11] && CSR[mie][11] && !CSR[mideleg][11])
+                        | (mip_live[7]  && CSR[mie][7]  && !CSR[mideleg][7]));
+
+  // Interrupt pending for S-mode: in S or U mode, SIE set (or prv < S),
+  // and at least one delegated interrupt enabled+pending.
+  wire s_irq_enabled = (prv < 2'b01) || (prv == 2'b01 && CSR[mstatus][1]);
+  wire s_irq_pending = s_irq_enabled &&
+                       (  (sip_live[9] && sie_live[9])   // SEI
+                        | (sip_live[5] && sie_live[5])); // STI
+
+  wire irq_pending = m_irq_pending | s_irq_pending;
 
   reg [2:0] cpu_state;
   localparam cpu_state_fetch   = 3'b000;
@@ -396,6 +438,7 @@ module nyanrv (
   insn_ecall_q  = { opcode_q, f3_q, insn_q[31:20] } == { 7'b1110011, 3'b000, 12'b000000000000 },
   insn_ebreak_q = { opcode_q, f3_q, insn_q[31:20] } == { 7'b1110011, 3'b000, 12'b000000000001 },
   insn_mret_q = { opcode_q, f3_q, insn_q[31:20] }   == { 7'b1110011, 3'b000, 12'b001100000010 },
+  insn_sret_q = { opcode_q, f3_q, insn_q[31:20] }   == { 7'b1110011, 3'b000, 12'b000100000010 },
 
   // System
   insn_csrrw_q = { opcode_q, f3_q } == { 7'b1110011, 3'b001 },
@@ -419,9 +462,12 @@ module nyanrv (
   reg [ 4:0] x_waddr;
 
   wire [11:0] csr_addr = insn_q[31:20];
-  reg [3:0] csr_rs, csr_rd;
+  reg [4:0] csr_rs, csr_rd;
   reg [31:0] csr_rd_val;
   reg        write_csr_rd;
+  // Sentinel indices for stval/satp (not in CSR[] array; handled specially)
+  localparam csr_stval_idx = 5'h1e;
+  localparam csr_satp_idx  = 5'h1f;
 
   // Forwarding: latch last write from execute so next instruction can bypass
   reg [ 4:0] rd_prev_q;
@@ -481,8 +527,11 @@ module nyanrv (
   integer reg_idx;
   initial begin
     for (reg_idx = 0; reg_idx < mcsr_max; reg_idx = reg_idx + 1)
-      // misa: MXL=01 (RV32), extensions I (bit 8) + M (bit 12)
-      CSR[reg_idx] = (reg_idx == misa) ? 32'h4000_1100 : 32'b0;
+      // misa: MXL=01 (RV32), extensions I(8) + M(12) + S(18)
+      CSR[reg_idx] = (reg_idx == misa) ? 32'h4004_1100 : 32'b0;
+    stval_r = 32'b0;
+    satp_r  = 32'b0;
+    prv     = 2'b11;  // start in M-mode
   end
 
   always @(posedge i_clk) begin
@@ -492,6 +541,9 @@ module nyanrv (
       pc <= 32'b0;
       write_rd_prev <= 1'b0;
       mem_align_trap <= 1'b0;
+      prv <= 2'b11;
+      stval_r <= 32'b0;
+      satp_r  <= 32'b0;
 `ifdef RISCV_FORMAL
       rvfi_valid       <= 1'b0;
       rvfi_order       <= 64'b0;
@@ -512,22 +564,40 @@ module nyanrv (
           if (i_imem_ready && rf_rst_done) begin
             if (irq_pending) begin
               // -------------------------------------------------------
-              // Take interrupt: redirect to mtvec without executing the
-              // fetched instruction.  mepc points to the instruction that
-              // would have been executed next (current pc).
+              // Take interrupt: redirect to mtvec/stvec without executing
+              // the fetched instruction.  mepc/sepc points to the
+              // instruction that would have been executed next (current pc).
               // -------------------------------------------------------
-              CSR[mepc]   <= pc;
-              CSR[mcause] <= (mip_live[11] && CSR[mie][11]) ?
-                             32'h8000_000B :   // MEI (external, higher priority)
-                             32'h8000_0007;    // MTI (timer)
-              // mstatus: save MIE→MPIE, clear MIE, set MPP=11.
-              CSR[mstatus] <= (CSR[mstatus] & 32'hffff_e777) |
-                              (CSR[mstatus][3] ? 32'h80 : 32'h0) |
-                              32'h1800;
-              pc      <= CSR[mtvec];
+              if (m_irq_pending) begin
+                // Taken in M-mode
+                CSR[mepc]   <= pc;
+                CSR[mcause] <= (mip_live[11] && CSR[mie][11] && !CSR[mideleg][11]) ?
+                               32'h8000_000B :   // MEI
+                               32'h8000_0007;    // MTI
+                // mstatus: save MIE→MPIE, clear MIE, set MPP=prv.
+                CSR[mstatus] <= (CSR[mstatus] & 32'hffff_e777) |
+                                (CSR[mstatus][3] ? 32'h80 : 32'h0) |
+                                ({20'b0, prv, 10'b0});  // MPP = old prv
+                prv     <= 2'b11;
+                pc      <= CSR[mtvec];
+              end else begin
+                // Taken in S-mode (delegated)
+                CSR[sepc]   <= pc;
+                CSR[scause] <= (sip_live[9] && sie_live[9]) ?
+                               32'h8000_0009 :   // SEI
+                               32'h8000_0005;    // STI
+                stval_r     <= 32'b0;
+                // mstatus: save SIE→SPIE, clear SIE, set SPP=prv[0].
+                // Mask out SIE[1], SPIE[5], SPP[8]; then set them.
+                CSR[mstatus] <= (CSR[mstatus] & 32'hffff_fefd) |   // clear SIE[1], SPIE[5]
+                                (CSR[mstatus][1] ? 32'h20 : 32'h0) | // SPIE = old SIE
+                                ({23'b0, prv[0], 8'b0});            // SPP = old prv[0]
+                prv     <= 2'b01;
+                pc      <= CSR[stvec];
+              end
               o_trap  <= 1'b1;
               write_rd_prev <= 1'b0;
-              // Stay in cpu_state_fetch; next cycle fetches from mtvec.
+              // Stay in cpu_state_fetch; next cycle fetches from trap vector.
 
 `ifdef RISCV_FORMAL
               // Report the interrupt retirement on the RVFI port.
@@ -764,24 +834,47 @@ module nyanrv (
 
         cpu_state_execute: begin
           if (insn_ecall_q || insn_ebreak_q || trap) begin
-            // Save current pc to mepc (the address of the ecall/trap instruction).
-            CSR[mepc] <= pc_q;
+            begin : exec_trap
+              // Determine cause code
+              reg [31:0] exc_cause;
+              reg        delegate;
+              if (insn_ecall_q) begin
+                case (prv)
+                  2'b00: exc_cause = 32'd8;   // U-mode ecall
+                  2'b01: exc_cause = 32'd9;   // S-mode ecall
+                  default: exc_cause = 32'd11; // M-mode ecall
+                endcase
+              end else if (insn_ebreak_q) begin
+                exc_cause = 32'd3;
+              end else begin
+                exc_cause = trap_cause;
+              end
 
-            // Set the cause.
-            if (insn_ecall_q) CSR[mcause] <= 32'd11;  // Machine-mode environment call
-            else if (insn_ebreak_q) CSR[mcause] <= 32'd3;  // Breakpoint
-            else CSR[mcause] <= trap_cause;  // 0 = insn misaligned, 2 = illegal
+              // Delegate if medeleg bit is set and we're not already in M-mode
+              delegate = (prv != 2'b11) && CSR[medeleg][exc_cause[4:0]];
 
-            // mtval: zero for ecall/ebreak/illegal traps.
-            CSR[mtval] <= 32'b0;
-
-            // mstatus: save MIE→MPIE, clear MIE, set MPP=11 (M-mode).
-            CSR[mstatus] <= (CSR[mstatus] & 32'hffff_e777) |
-                            (CSR[mstatus][3] ? 32'h80 : 32'h0) | // MPIE = old MIE
-                            32'h1800;                             // MPP = 2'b11
-
-            // Jump to handler and reset state.
-            pc <= CSR[mtvec];
+              if (delegate) begin
+                // Trap to S-mode
+                CSR[sepc]   <= pc_q;
+                CSR[scause] <= exc_cause;
+                stval_r     <= 32'b0;
+                CSR[mstatus] <= (CSR[mstatus] & 32'hffff_fefd) |
+                                (CSR[mstatus][1] ? 32'h20 : 32'h0) |
+                                ({23'b0, prv[0], 8'b0});
+                prv  <= 2'b01;
+                pc   <= CSR[stvec];
+              end else begin
+                // Trap to M-mode
+                CSR[mepc]   <= pc_q;
+                CSR[mcause] <= exc_cause;
+                CSR[mtval]  <= 32'b0;
+                CSR[mstatus] <= (CSR[mstatus] & 32'hffff_e777) |
+                                (CSR[mstatus][3] ? 32'h80 : 32'h0) |
+                                ({20'b0, prv, 10'b0});  // MPP = old prv
+                prv  <= 2'b11;
+                pc   <= CSR[mtvec];
+              end
+            end
             cpu_state <= cpu_state_fetch;
             o_trap <= 1'b1;
 
@@ -845,12 +938,34 @@ module nyanrv (
             end else begin
               write_rd_prev <= 1'b0;
             end
-            if (write_csr_rd) CSR[csr_rd] <= csr_rd_val;
-            // MRET: restore mstatus — MIE←MPIE, MPIE←1, MPP←0.
-            if (insn_mret_q)
+            if (write_csr_rd) begin
+              case (csr_rd)
+                csr_stval_idx: stval_r <= csr_rd_val;
+                csr_satp_idx:  satp_r  <= csr_rd_val;
+                // sstatus writes update the S-mode visible fields of mstatus
+                sstatus: CSR[mstatus] <= (CSR[mstatus] & ~32'h800d_e122) |
+                                         (csr_rd_val   &  32'h800d_e122);
+                // sie writes go to mie (merged with non-delegated bits)
+                sie: CSR[mie] <= csr_rd_val;
+                // sip writes go to mip (only SSIP bit, already masked in comb)
+                sip: CSR[mip] <= csr_rd_val;
+                default: CSR[csr_rd] <= csr_rd_val;
+              endcase
+            end
+            // MRET: restore mstatus — MIE←MPIE, MPIE←1, MPP←0, prv←MPP.
+            if (insn_mret_q) begin
               CSR[mstatus] <= (CSR[mstatus] & 32'hffff_e777) |
                               (CSR[mstatus][7] ? 32'h8 : 32'h0) | // MIE = old MPIE
                               32'h80;                              // MPIE = 1
+              prv <= CSR[mstatus][12:11];  // restore prv from MPP
+            end
+            // SRET: restore mstatus — SIE←SPIE, SPIE←1, SPP←0, prv←SPP.
+            if (insn_sret_q) begin
+              CSR[mstatus] <= (CSR[mstatus] & 32'hffff_fefd) |
+                              (CSR[mstatus][5] ? 32'h2 : 32'h0) | // SIE = old SPIE
+                              32'h20;                              // SPIE = 1
+              prv <= {1'b0, CSR[mstatus][8]};  // restore prv from SPP
+            end
             pc <= pc_next;
             cpu_state <= cpu_state_fetch;
 
@@ -921,13 +1036,29 @@ module nyanrv (
         cpu_state_load: begin
           if (mem_align_trap) begin
             // Misaligned load — raise load-address-misaligned exception.
-            CSR[mepc]   <= pc_q;
-            CSR[mcause] <= 32'd4;  // Load address misaligned
-            CSR[mtval]  <= load_eff_addr_q;
-            CSR[mstatus] <= (CSR[mstatus] & 32'hffff_e777) |
-                            (CSR[mstatus][3] ? 32'h80 : 32'h0) |
-                            32'h1800;
-            pc          <= CSR[mtvec];
+            begin : load_trap
+              reg delegate_l;
+              delegate_l = (prv != 2'b11) && CSR[medeleg][4];
+              if (delegate_l) begin
+                CSR[sepc]   <= pc_q;
+                CSR[scause] <= 32'd4;
+                stval_r     <= load_eff_addr_q;
+                CSR[mstatus] <= (CSR[mstatus] & 32'hffff_fefd) |
+                                (CSR[mstatus][1] ? 32'h20 : 32'h0) |
+                                ({23'b0, prv[0], 8'b0});
+                prv <= 2'b01;
+                pc  <= CSR[stvec];
+              end else begin
+                CSR[mepc]   <= pc_q;
+                CSR[mcause] <= 32'd4;
+                CSR[mtval]  <= load_eff_addr_q;
+                CSR[mstatus] <= (CSR[mstatus] & 32'hffff_e777) |
+                                (CSR[mstatus][3] ? 32'h80 : 32'h0) |
+                                ({20'b0, prv, 10'b0});
+                prv <= 2'b11;
+                pc  <= CSR[mtvec];
+              end
+            end
             cpu_state   <= cpu_state_fetch;
             o_trap      <= 1'b1;
             mem_align_trap <= 1'b0;
@@ -1036,13 +1167,29 @@ module nyanrv (
         cpu_state_store: begin
           if (mem_align_trap) begin
             // Misaligned store — raise store-address-misaligned exception.
-            CSR[mepc]   <= pc_q;
-            CSR[mcause] <= 32'd6;  // Store/AMO address misaligned
-            CSR[mtval]  <= store_eff_addr_q;
-            CSR[mstatus] <= (CSR[mstatus] & 32'hffff_e777) |
-                            (CSR[mstatus][3] ? 32'h80 : 32'h0) |
-                            32'h1800;
-            pc          <= CSR[mtvec];
+            begin : store_trap
+              reg delegate_s;
+              delegate_s = (prv != 2'b11) && CSR[medeleg][6];
+              if (delegate_s) begin
+                CSR[sepc]   <= pc_q;
+                CSR[scause] <= 32'd6;
+                stval_r     <= store_eff_addr_q;
+                CSR[mstatus] <= (CSR[mstatus] & 32'hffff_fefd) |
+                                (CSR[mstatus][1] ? 32'h20 : 32'h0) |
+                                ({23'b0, prv[0], 8'b0});
+                prv <= 2'b01;
+                pc  <= CSR[stvec];
+              end else begin
+                CSR[mepc]   <= pc_q;
+                CSR[mcause] <= 32'd6;
+                CSR[mtval]  <= store_eff_addr_q;
+                CSR[mstatus] <= (CSR[mstatus] & 32'hffff_e777) |
+                                (CSR[mstatus][3] ? 32'h80 : 32'h0) |
+                                ({20'b0, prv, 10'b0});
+                prv <= 2'b11;
+                pc  <= CSR[mtvec];
+              end
+            end
             cpu_state   <= cpu_state_fetch;
             o_trap      <= 1'b1;
             mem_align_trap <= 1'b0;
@@ -1393,88 +1540,81 @@ module nyanrv (
     if (insn_fence_q) begin
     end else if (insn_mret_q) begin
       pc_next = CSR[mepc];
+    end else if (insn_sret_q) begin
+      pc_next = CSR[sepc];
     end else if (insn_csrrw_q || insn_csrrs_q || insn_csrrc_q ||
        insn_csrrwi_q || insn_csrrsi_q || insn_csrrci_q) begin
       case (csr_addr)
-        12'h300: begin
-          csr_rs = mstatus;
-          csr_rd = mstatus;
-        end
-        12'h301: begin
-          csr_rs = misa;
-          csr_rd = misa;
-        end
-        12'h304: begin
-          csr_rs = mie;
-          csr_rd = mie;
-        end
-        12'h744: begin
-          csr_rs = mnstatus;
-          csr_rd = mnstatus;
-        end
-        12'h305: begin
-          csr_rs = mtvec;
-          csr_rd = mtvec;
-        end
-        12'h340: begin
-          csr_rs = mscratch;
-          csr_rd = mscratch;
-        end
-        12'h341: begin
-          csr_rs = mepc;
-          csr_rd = mepc;
-        end
-        12'h342: begin
-          csr_rs = mcause;
-          csr_rd = mcause;
-        end
-        12'h343: begin
-          csr_rs = mtval;
-          csr_rd = mtval;
-        end
-        12'h344: begin
-          csr_rs = mip;
-          csr_rd = mip;
-        end
-        12'hf14: begin
-          csr_rs = mhartid;
-          csr_rd = mhartid;
-        end
+        // ── M-mode CSRs ──────────────────────────────────────────────
+        12'h300: begin csr_rs = mstatus;  csr_rd = mstatus;  end
+        12'h301: begin csr_rs = misa;     csr_rd = misa;     end
+        12'h302: begin csr_rs = medeleg;  csr_rd = medeleg;  end
+        12'h303: begin csr_rs = mideleg;  csr_rd = mideleg;  end
+        12'h304: begin csr_rs = mie;      csr_rd = mie;      end
+        12'h305: begin csr_rs = mtvec;    csr_rd = mtvec;    end
+        12'h340: begin csr_rs = mscratch; csr_rd = mscratch; end
+        12'h341: begin csr_rs = mepc;     csr_rd = mepc;     end
+        12'h342: begin csr_rs = mcause;   csr_rd = mcause;   end
+        12'h343: begin csr_rs = mtval;    csr_rd = mtval;    end
+        12'h344: begin csr_rs = mip;      csr_rd = mip;      end
+        12'hf14: begin csr_rs = mhartid;  csr_rd = mhartid;  end
+        12'h744: begin csr_rs = mnstatus; csr_rd = mnstatus; end
+        // ── S-mode CSRs ──────────────────────────────────────────────
+        12'h100: begin csr_rs = sstatus;  csr_rd = sstatus;  end
+        12'h104: begin csr_rs = sie;      csr_rd = sie;      end
+        12'h105: begin csr_rs = stvec;    csr_rd = stvec;    end
+        12'h140: begin csr_rs = sscratch; csr_rd = sscratch; end
+        12'h141: begin csr_rs = sepc;     csr_rd = sepc;     end
+        12'h142: begin csr_rs = scause;   csr_rd = scause;   end
+        12'h143: begin csr_rs = csr_stval_idx; csr_rd = csr_stval_idx; end  // stval
+        12'h144: begin csr_rs = sip;          csr_rd = sip;           end
+        12'h180: begin csr_rs = csr_satp_idx; csr_rd = csr_satp_idx;  end  // satp
         default: trap = 1'b1;
       endcase  // case (csr_addr)
 
       write_rd = 1'b1;
-      // mip[7]/mip[11] are read-only hardware bits; return live value.
-      rd_val = (csr_rs == mip) ? mip_live : CSR[csr_rs];
-
-      // For read-modify-write on mip, use mip_live as the base so the
-      // read-only bits are not accidentally preserved from the register.
+      // Read value mux (live values for mip, sstatus, sip, sie, stval, satp)
       begin : csr_rval
-        reg [31:0] csr_read_val;
-        csr_read_val = (csr_rs == mip) ? mip_live : CSR[csr_rs];
+        reg [31:0] raw_rd;
+        case (csr_rs)
+          mip:     raw_rd = mip_live;
+          sstatus: raw_rd = sstatus_live;
+          sip:     raw_rd = sip_live;
+          sie:     raw_rd = sie_live;
+          csr_stval_idx: raw_rd = stval_r;
+          csr_satp_idx:  raw_rd = satp_r;
+          default: raw_rd = CSR[csr_rs];
+        endcase
+        rd_val = raw_rd;
+
         if (insn_csrrw_q) begin
           write_csr_rd = 1'b1;
           csr_rd_val   = rs1_val;
         end else if (insn_csrrs_q) begin
           write_csr_rd = (rs1_q != 5'b0);
-          csr_rd_val   = csr_read_val | rs1_val;
+          csr_rd_val   = raw_rd | rs1_val;
         end else if (insn_csrrc_q) begin
           write_csr_rd = (rs1_q != 5'b0);
-          csr_rd_val   = csr_read_val & ~rs1_val;
+          csr_rd_val   = raw_rd & ~rs1_val;
         end else if (insn_csrrwi_q) begin
           write_csr_rd = 1'b1;
           csr_rd_val   = {27'b0, rs1_q};
         end else if (insn_csrrsi_q) begin
           write_csr_rd = (rs1_q != 5'b0);
-          csr_rd_val   = csr_read_val | {27'b0, rs1_q};
+          csr_rd_val   = raw_rd | {27'b0, rs1_q};
         end else begin  // csrrci
           write_csr_rd = (rs1_q != 5'b0);
-          csr_rd_val   = csr_read_val & ~{27'b0, rs1_q};
+          csr_rd_val   = raw_rd & ~{27'b0, rs1_q};
         end
       end
-      // Writes to mip's read-only MTIP/MEIP bits are ignored: strip them
-      // from csr_rd_val so the register never stores those bits.
+      // Writes to mip's read-only MTIP/MEIP bits are ignored.
       if (csr_rd == mip) csr_rd_val = csr_rd_val & ~32'h0000_0880;
+      // sip writes only affect delegated+writable SSIP bit.
+      if (csr_rd == sip) csr_rd_val = (CSR[mip] & ~32'h0000_0002) |
+                                      (csr_rd_val & CSR[mideleg] & 32'h0000_0002);
+      // sie writes only affect delegated bits; merge into mie.
+      if (csr_rd == sie) csr_rd_val = (CSR[mie] & ~CSR[mideleg]) |
+                                      (csr_rd_val & CSR[mideleg]);
     end else begin
       trap = 1'b1;
     end

@@ -78,9 +78,9 @@ test_main:
     .word (0xF14 << 20) | (REG_x0 << 15) | (0b010 << 12) | (REG_a1 << 7) | 0b1110011
     CHECK a1, 0, fail
 
-    /* ---- misa: expect 0x40001100 (RV32IM: MXL=01, I=bit8, M=bit12) ---- */
+    /* ---- misa: expect 0x40041100 (RV32IMS: MXL=01, I=bit8, M=bit12, S=bit18) ---- */
     CSRRS_RAW REG_a1, CSR_MISA, REG_x0
-    li   t0, 0x40001100
+    li   t0, 0x40041100
     bne  a1, t0, fail
 
     /* ---- CSRRW on mscratch (0x340) ---- */

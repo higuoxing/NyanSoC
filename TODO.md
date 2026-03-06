@@ -11,7 +11,7 @@ Goal: run full MMU Linux (Sv32) on the Tang Nano 20K.
 | SPI SD card controller | ✅ Done, tested |
 | SDRAM controller (register-mapped) | ✅ Done, tested |
 | CLINT (mtime / mtimecmp) | ✅ Done, tested |
-| S-mode CSRs | ❌ Not started |
+| S-mode CSRs + privilege tracking | ✅ Done, sim-tested |
 | Sv32 MMU | ❌ Not started |
 | SDRAM direct CPU address mapping | ❌ Not started |
 | PLIC | ❌ Not started |
@@ -25,17 +25,17 @@ Goal: run full MMU Linux (Sv32) on the Tang Nano 20K.
 
 Add S-mode privilege level to `rtl/nyanrv.v`.
 
-- [ ] Add `sstatus`, `stvec`, `sip`, `sie`, `sscratch`, `sepc`, `scause`, `stval` CSRs
-- [ ] Add `medeleg` / `mideleg` registers (M-mode delegates traps/interrupts to S-mode)
-- [ ] Add `satp` CSR (Sv32 page-table base + MODE field; reads as 0 until MMU is added)
-- [ ] Implement `sret` instruction (return from S-mode trap)
-- [ ] Implement privilege-level tracking (`prv` register: 2'b11=M, 2'b01=S, 2'b00=U)
-- [ ] Route traps through delegation logic:
+- [x] Add `sstatus`, `stvec`, `sip`, `sie`, `sscratch`, `sepc`, `scause`, `stval` CSRs
+- [x] Add `medeleg` / `mideleg` registers (M-mode delegates traps/interrupts to S-mode)
+- [x] Add `satp` CSR (Sv32 page-table base + MODE field; reads as 0 until MMU is added)
+- [x] Implement `sret` instruction (return from S-mode trap)
+- [x] Implement privilege-level tracking (`prv` register: 2'b11=M, 2'b01=S, 2'b00=U)
+- [x] Route traps through delegation logic:
   - If `medeleg[cause]` is set and current prv < M → take trap in S-mode
   - Otherwise → take trap in M-mode (existing behaviour)
-- [ ] Update `mstatus` fields: `SPP`, `SPIE`, `SIE` (S-mode equivalents of MPP/MPIE/MIE)
-- [ ] Update `mip` / `mie` to include supervisor timer (STIP/STIE) and external (SEIP/SEIE)
-- [ ] Write `smode_test` firmware to verify S-mode trap entry/exit and CSR access
+- [x] Update `mstatus` fields: `SPP`, `SPIE`, `SIE` (S-mode equivalents of MPP/MPIE/MIE)
+- [x] Update `mip` / `mie` to include supervisor timer (STIP/STIE) and external (SEIP/SEIE)
+- [x] Write `smode_test` firmware to verify S-mode trap entry/exit and CSR access
 
 ## Phase 2 — CPU: Sv32 MMU
 

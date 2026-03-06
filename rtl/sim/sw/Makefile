@@ -116,6 +116,29 @@ test_irq: test_irq.hex nyanrv_irq_tb.vvp
 	    exit 1; \
 	fi
 
+# ── S-mode test (uses dedicated testbench that doesn't stop on traps) ────────
+
+SMODE_TB  := $(PROJ_ROOT)/rtl/sim/rtl/nyanrv_smode_tb.v
+
+nyanrv_smode_tb.vvp: $(SMODE_TB) $(RTL)
+	iverilog -g2012 -o $@ $(RTL) $(SMODE_TB)
+
+# test_smode has its own _start — build without crt0.S
+test_smode.elf: asm/test_smode.S link.ld
+	$(AS) $(ASFLAGS) $(LDFLAGS) -o $@ asm/test_smode.S
+
+.PHONY: test_smode
+test_smode: test_smode.hex nyanrv_smode_tb.vvp
+	@cp test_smode.hex imem.hex
+	@result=$$(vvp nyanrv_smode_tb.vvp 2>&1); \
+	if echo "$$result" | grep -q "^PASS"; then \
+	    echo "PASS  test_smode"; \
+	else \
+	    echo "FAIL  test_smode"; \
+	    echo "$$result" | sed 's/^/      /'; \
+	    exit 1; \
+	fi
+
 # Optional: run with waveform dump (+dump plusarg)
 .PHONY: waves
 waves: $(firstword $(TESTS)).hex nyanrv_tb.vvp
