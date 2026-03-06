@@ -3,7 +3,7 @@
 
 /* NyanSoC top-level SoC for Tang Nano 20K
  *
- * Memory map (all regions, indexed by addr[11:2]):
+ * Memory map:
  *   0x0000_0000 - 0x0000_0FFF  IMEM (1 KiB words, combinatorial LUT-ROM)
  *   0x0001_0000 - 0x0001_0FFF  DMEM (1 KiB words, BRAM, read/write)
  *   0x0002_0000                GPIO output register
@@ -18,14 +18,19 @@
  *                                                 write: bit0=rd_n, bit1=wr_n (active-low strobe)
  *   0x0005_0004                SDRAM word address (21-bit, write before issuing command)
  *   0x0005_0008                SDRAM data: write=data to write, read=last read data
+ *   0x0200_0000                CLINT mtime    lo (bits [31: 0])  R/W
+ *   0x0200_0004                CLINT mtime    hi (bits [63:32])  R/W
+ *   0x0200_0008                CLINT mtimecmp lo (bits [31: 0])  R/W
+ *   0x0200_000C                CLINT mtimecmp hi (bits [63:32])  R/W
  *
- * Address decode uses bits [19:16]:
- *   4'b0000 -> IMEM  (only via instruction bus)
- *   4'b0001 -> DMEM
- *   4'b0010 -> GPIO
- *   4'b0011 -> UART (RX at offset 0, TX at offset 4)
- *   4'b0100 -> SD card controller
- *   4'b0101 -> SDRAM controller
+ * Address decode:
+ *   bits [29:28] == 2'b10  -> CLINT  (0x0200_0000)
+ *   bits [19:16] == 4'b0000 -> IMEM  (only via instruction bus)
+ *   bits [19:16] == 4'b0001 -> DMEM
+ *   bits [19:16] == 4'b0010 -> GPIO
+ *   bits [19:16] == 4'b0011 -> UART
+ *   bits [19:16] == 4'b0100 -> SD card controller
+ *   bits [19:16] == 4'b0101 -> SDRAM controller
  *
  * Reset: i_rst_n is the S1 button (active-low, pulled high at rest).
  * A power-on reset shift register (por_sr) guarantees reset is held for
@@ -356,6 +361,69 @@ module top #(
       .io_sdram_dq        (IO_sdram_dq)
   );
 
+  // ── CLINT (Core Local Interruptor) ───────────────────────────────────────
+  // Standard RISC-V CLINT at 0x0200_0000.
+  // mtime    increments every clock cycle (27 MHz).
+  // mtimecmp is compared against mtime; when mtime >= mtimecmp the machine
+  // timer interrupt (MTIP) is asserted via i_irq_timer on the CPU.
+  //
+  // Register map (bits [3:2] select word):
+  //   +0x0  mtime    lo  [R/W]
+  //   +0x4  mtime    hi  [R/W]
+  //   +0x8  mtimecmp lo  [R/W]
+  //   +0xC  mtimecmp hi  [R/W]
+  //
+  // Address decode: bits [29:28] == 2'b10 selects the CLINT region.
+  // (0x0200_0000 → addr[29:28] = 2'b10, addr[27:0] = 0)
+
+  wire clint_region_r = dmem_rvalid && (dmem_raddr[29:28] == 2'b10);
+  wire clint_region_w = dmem_wvalid && (dmem_waddr[29:28] == 2'b10);
+
+  reg [63:0] mtime;
+  reg [63:0] mtimecmp;
+
+  // mtime increments every cycle; CPU writes to mtime or mtimecmp take priority.
+  always @(posedge i_clk) begin
+    if (!rst_n) begin
+      mtime    <= 64'd0;
+      mtimecmp <= 64'hFFFF_FFFF_FFFF_FFFF;
+    end else begin
+      mtime <= mtime + 64'd1;
+      if (clint_region_w) begin
+        case (dmem_waddr[3:2])
+          2'b00: begin  // mtime lo (write overrides increment this cycle)
+            if (dmem_wstrb[0]) mtime[ 7: 0] <= dmem_wdata[ 7: 0];
+            if (dmem_wstrb[1]) mtime[15: 8] <= dmem_wdata[15: 8];
+            if (dmem_wstrb[2]) mtime[23:16] <= dmem_wdata[23:16];
+            if (dmem_wstrb[3]) mtime[31:24] <= dmem_wdata[31:24];
+          end
+          2'b01: begin  // mtime hi
+            if (dmem_wstrb[0]) mtime[39:32] <= dmem_wdata[ 7: 0];
+            if (dmem_wstrb[1]) mtime[47:40] <= dmem_wdata[15: 8];
+            if (dmem_wstrb[2]) mtime[55:48] <= dmem_wdata[23:16];
+            if (dmem_wstrb[3]) mtime[63:56] <= dmem_wdata[31:24];
+          end
+          2'b10: begin  // mtimecmp lo
+            if (dmem_wstrb[0]) mtimecmp[ 7: 0] <= dmem_wdata[ 7: 0];
+            if (dmem_wstrb[1]) mtimecmp[15: 8] <= dmem_wdata[15: 8];
+            if (dmem_wstrb[2]) mtimecmp[23:16] <= dmem_wdata[23:16];
+            if (dmem_wstrb[3]) mtimecmp[31:24] <= dmem_wdata[31:24];
+          end
+          2'b11: begin  // mtimecmp hi
+            if (dmem_wstrb[0]) mtimecmp[39:32] <= dmem_wdata[ 7: 0];
+            if (dmem_wstrb[1]) mtimecmp[47:40] <= dmem_wdata[15: 8];
+            if (dmem_wstrb[2]) mtimecmp[55:48] <= dmem_wdata[23:16];
+            if (dmem_wstrb[3]) mtimecmp[63:56] <= dmem_wdata[31:24];
+          end
+          default: ;
+        endcase
+      end
+    end
+  end
+
+  // Timer interrupt: asserted when mtime >= mtimecmp (unsigned comparison).
+  wire irq_timer = (mtime >= mtimecmp);
+
   // ── IMEM data-path read (for .rodata accessed via data bus) ──────────────
   // The same LUT-ROM is read combinatorially with dmem_raddr for data reads.
   wire [9:0] dmem_imem_idx = dmem_raddr[11:2];
@@ -384,22 +452,33 @@ module top #(
                            (dmem_raddr[3:2] == 2'b11) ? {24'b0, sd_rd_data} : 32'b0;
 
   always @(*) begin
-    case (dmem_raddr[19:16])
-      4'b0000: dmem_rdata = dmem_imem_rdata;
-      4'b0001: dmem_rdata = {dmem3[dmem_raddr_idx],
-                              dmem2[dmem_raddr_idx],
-                              dmem1[dmem_raddr_idx],
-                              dmem0[dmem_raddr_idx]};
-      4'b0011: dmem_rdata = dmem_raddr[2]
-                             ? {31'b0, tx_busy}
-                             : {23'b0, rx_valid_latch, rx_data_latch};
-      4'b0100: dmem_rdata = sd_rd_mux;
-      4'b0101: dmem_rdata = (dmem_raddr[3:2] == 2'b00) ? {29'b0, sdram_rd_valid_latch, sdram_init_done, sdram_busy_n} :
-                            (dmem_raddr[3:2] == 2'b01) ? {11'b0, sdram_addr_reg} :
-                                                          sdram_data_latch;
-      default: dmem_rdata = 32'b0;
-    endcase
     dmem_rready = dmem_rvalid;
+    if (clint_region_r) begin
+      // CLINT read: mtime and mtimecmp registers.
+      case (dmem_raddr[3:2])
+        2'b00:   dmem_rdata = mtime[31:0];
+        2'b01:   dmem_rdata = mtime[63:32];
+        2'b10:   dmem_rdata = mtimecmp[31:0];
+        2'b11:   dmem_rdata = mtimecmp[63:32];
+        default: dmem_rdata = 32'b0;
+      endcase
+    end else begin
+      case (dmem_raddr[19:16])
+        4'b0000: dmem_rdata = dmem_imem_rdata;
+        4'b0001: dmem_rdata = {dmem3[dmem_raddr_idx],
+                                dmem2[dmem_raddr_idx],
+                                dmem1[dmem_raddr_idx],
+                                dmem0[dmem_raddr_idx]};
+        4'b0011: dmem_rdata = dmem_raddr[2]
+                               ? {31'b0, tx_busy}
+                               : {23'b0, rx_valid_latch, rx_data_latch};
+        4'b0100: dmem_rdata = sd_rd_mux;
+        4'b0101: dmem_rdata = (dmem_raddr[3:2] == 2'b00) ? {29'b0, sdram_rd_valid_latch, sdram_init_done, sdram_busy_n} :
+                              (dmem_raddr[3:2] == 2'b01) ? {11'b0, sdram_addr_reg} :
+                                                            sdram_data_latch;
+        default: dmem_rdata = 32'b0;
+      endcase
+    end
   end
 
   // ── GPIO register ─────────────────────────────────────────────────────────
@@ -432,7 +511,7 @@ module top #(
       .o_dmem_wstrb   (dmem_wstrb),
       .o_dmem_wdata   (dmem_wdata),
       .i_dmem_wready  (dmem_wready),
-      .i_irq_timer    (1'b0),
+      .i_irq_timer    (irq_timer),
       .i_irq_external (1'b0),
       .o_trap         (o_trap)
   );
