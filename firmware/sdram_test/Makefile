@@ -1,0 +1,51 @@
+CROSS   ?= riscv32-unknown-elf
+CC      := $(CROSS)-gcc
+OBJCOPY := $(CROSS)-objcopy
+OBJDUMP := $(CROSS)-objdump
+
+CFLAGS  := -march=rv32i -mabi=ilp32 -Os -ffreestanding -nostdlib \
+            -nostartfiles -Wall -Wextra
+LDFLAGS := -T link.ld -march=rv32i -mabi=ilp32 -nostdlib \
+            -nostartfiles -Wl,--no-relax
+
+SRCS    := start.S sdram_test.c
+
+.PHONY: all clean dis
+
+all: imem.hex imem_init.vh imem_rom.vh imem_data_rom.vh
+
+imem.hex: sdram_test.elf
+	$(OBJCOPY) -O verilog --verilog-data-width=4 \
+	    --only-section=.text --only-section=.rodata \
+	    $< $@
+
+AWK_HEXTODEC := function hextodec(h,  i,v,c){v=0;h=toupper(h);for(i=1;i<=length(h);i++){c=index("0123456789ABCDEF",substr(h,i,1))-1;v=v*16+c};return v} {gsub(/\r/,"",$$0)}
+
+imem_init.vh: imem.hex
+	awk '$(AWK_HEXTODEC) \
+	     /^@/{addr=hextodec(substr($$0,2)); next} \
+	     {for(i=1;i<=NF;i++) printf "    imem[%d] = 32'\''h%s;\n", addr++, $$i}' \
+	    $< > $@
+
+imem_rom.vh: imem.hex
+	@printf '    case (imem_idx)\n' > $@
+	awk '$(AWK_HEXTODEC) \
+	     /^@/{addr=hextodec(substr($$0,2)); next} \
+	     {for(i=1;i<=NF;i++){gsub(/\r/,"",$$i); printf "      10'\''d%d: imem_rdata = 32'\''h%s;\n", addr++, toupper($$i)}}' \
+	    $< >> $@
+	@printf '      default: imem_rdata = 32'\''h00000013;\n    endcase\n' >> $@
+
+imem_data_rom.vh: imem.hex
+	awk '$(AWK_HEXTODEC) \
+	     /^@/{addr=hextodec(substr($$0,2)); next} \
+	     {for(i=1;i<=NF;i++){gsub(/\r/,"",$$i); printf "      10'\''d%d: dmem_imem_rdata = 32'\''h%s;\n", addr++, toupper($$i)}}' \
+	    $< > $@
+
+sdram_test.elf: $(SRCS) link.ld
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(SRCS)
+
+dis: sdram_test.elf
+	$(OBJDUMP) -d $<
+
+clean:
+	rm -f sdram_test.elf imem.hex imem_init.vh imem_rom.vh imem_data_rom.vh

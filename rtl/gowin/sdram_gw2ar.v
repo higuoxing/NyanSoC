@@ -336,10 +336,18 @@ module sdram_gw2ar #(
   end
 
   // ── Capture read data from io_sdram_dq ────────────────────────────────────
-  // rd_valid is asserted the same cycle data appears; register it one extra
-  // cycle so o_sdrc_data is stable when o_sdrc_rd_valid is high.
+  // rd_valid pulses the cycle data appears on io_sdram_dq; register both
+  // data and the valid flag together so o_sdrc_data and o_sdrc_rd_valid are
+  // aligned (both reflect the same cycle's capture).
+  reg rd_valid_r;
   always @(posedge i_sdrc_clk) begin
-    if (rd_valid) rd_data <= io_sdram_dq;
+    if (!i_sdrc_rst_n) begin
+      rd_valid_r <= 1'b0;
+      rd_data    <= {DATA_WIDTH{1'b0}};
+    end else begin
+      rd_valid_r <= rd_valid;
+      if (rd_valid) rd_data <= io_sdram_dq;
+    end
   end
 
   // ── wrd_ack: 2-cycle shift register from request detection ────────────────
@@ -365,7 +373,7 @@ module sdram_gw2ar #(
   assign io_sdram_dq   = dq_oe ? dq_out : {DATA_WIDTH{1'bz}};
 
   assign o_sdrc_data      = rd_data;
-  assign o_sdrc_rd_valid  = rd_valid;
+  assign o_sdrc_rd_valid  = rd_valid_r;
   assign o_sdrc_wrd_ack   = ack_sr[1];
   assign o_sdrc_busy_n    = (sdrc_state == STATE_IDLE);
   assign o_sdrc_init_done = (sdrc_state != STATE_INIT         &&

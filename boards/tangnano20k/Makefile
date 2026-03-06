@@ -2,13 +2,14 @@ BOARD      = tangnano20k
 ROOT_DIR   = ../..
 FW        ?= echo
 PROG_DIR   = $(ROOT_DIR)/firmware/$(FW)
-YOSYS     ?= yosys
-NEXTPNR   ?= nextpnr-himbaechel
+YOSYS      ?= yosys
+NEXTPNR    ?= nextpnr-himbaechel
 TOP_MODULE ?= top
 SOURCES   := $(ROOT_DIR)/rtl/nyanrv.v
 SOURCES   += $(ROOT_DIR)/rtl/uart/uart_rx.v
 SOURCES   += $(ROOT_DIR)/rtl/uart/uart_tx.v
 SOURCES   += $(ROOT_DIR)/rtl/sdspi/sdspi.v
+SOURCES   += $(ROOT_DIR)/rtl/gowin/sdram_gw2ar.v
 SOURCES   += $(TOP_MODULE).v
 
 all: $(BOARD).fs

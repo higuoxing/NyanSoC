@@ -14,6 +14,10 @@
  *   0x0004_0004                SD command write: bit0=rd, bit1=wr (single-cycle strobe)
  *   0x0004_0008                SD address read/write: 32-bit block address
  *   0x0004_000C                SD data FIFO: write=push byte, read=pop byte
+ *   0x0005_0000                SDRAM ctrl/status  read: {30'b0, init_done, busy_n}
+ *                                                 write: bit0=rd_n, bit1=wr_n (active-low strobe)
+ *   0x0005_0004                SDRAM word address (21-bit, write before issuing command)
+ *   0x0005_0008                SDRAM data: write=data to write, read=last read data
  *
  * Address decode uses bits [19:16]:
  *   4'b0000 -> IMEM  (only via instruction bus)
@@ -21,6 +25,7 @@
  *   4'b0010 -> GPIO
  *   4'b0011 -> UART (RX at offset 0, TX at offset 4)
  *   4'b0100 -> SD card controller
+ *   4'b0101 -> SDRAM controller
  *
  * Reset: i_rst_n is the S1 button (active-low, pulled high at rest).
  * A power-on reset shift register (por_sr) guarantees reset is held for
@@ -42,7 +47,19 @@ module top #(
     output wire       o_spi_clk,
     output wire       o_spi_mosi,
     input  wire       i_spi_miso,
-    output wire       o_spi_cs_n
+    output wire       o_spi_cs_n,
+
+    // GW2AR-18 embedded SDRAM dedicated pins (no IO_LOC constraints needed)
+    output wire        O_sdram_clk,
+    output wire        O_sdram_cke,
+    output wire        O_sdram_cs_n,
+    output wire        O_sdram_cas_n,
+    output wire        O_sdram_ras_n,
+    output wire        O_sdram_wen_n,
+    output wire [ 3:0] O_sdram_dqm,
+    output wire [10:0] O_sdram_addr,
+    output wire [ 1:0] O_sdram_ba,
+    inout  wire [31:0] IO_sdram_dq
 );
 
   // ── Parameters ────────────────────────────────────────────────────────────
@@ -240,6 +257,105 @@ module top #(
       .o_dbg_prev   (sd_dbg_prev)
   );
 
+  // ── SDRAM controller ──────────────────────────────────────────────────────
+  // Register map at 0x0005_xxxx (bits [3:2] select register):
+  //   +0x0  ctrl/status [R/W]  read: {29'b0, rd_valid, init_done, busy_n}
+  //                            write: bit0=wr_n, bit1=rd_n (active-low, single-cycle)
+  //   +0x4  address     [R/W]  21-bit word address
+  //   +0x8  data        [R]    last received data (valid when rd_valid=1)
+
+  wire sdram_region_r = dmem_rvalid && (dmem_raddr[19:16] == 4'b0101);
+  wire sdram_region_w = dmem_wvalid && (dmem_waddr[19:16] == 4'b0101);
+
+  wire        sdram_init_done;
+  wire        sdram_busy_n;
+  wire        sdram_rd_valid;
+  wire        sdram_wrd_ack;
+  wire [31:0] sdram_data_out;
+
+  reg  [20:0] sdram_addr_reg;
+  reg  [31:0] sdram_data_in;
+  reg  [31:0] sdram_data_latch;
+  // rd_valid is a single-cycle pulse from the controller — latch it so the
+  // CPU (running at the same clock but many cycles per instruction) can see it.
+  // Cleared when the CPU reads the data register (+0x8).
+  reg         sdram_rd_valid_latch;
+
+  wire sdram_data_rd = sdram_region_r && (dmem_raddr[3:2] == 2'b10);
+
+  // wr_n / rd_n are combinatorial: the controller latches addr+data+cmd in
+  // the same cycle, so all three must be valid simultaneously.
+  wire sdram_ctrl_w = sdram_region_w && (dmem_waddr[3:2] == 2'b00) && dmem_wstrb[0];
+  wire sdram_wr_n   = sdram_ctrl_w ? dmem_wdata[0] : 1'b1;
+  wire sdram_rd_n   = sdram_ctrl_w ? dmem_wdata[1] : 1'b1;
+
+  always @(posedge i_clk) begin
+    if (!rst_n) begin
+      sdram_addr_reg      <= 21'd0;
+      sdram_data_in       <= 32'd0;
+      sdram_data_latch    <= 32'd0;
+      sdram_rd_valid_latch<= 1'b0;
+    end else begin
+      // address register write
+      if (sdram_region_w && (dmem_waddr[3:2] == 2'b01))
+        sdram_addr_reg <= dmem_wdata[20:0];
+      // data register write
+      if (sdram_region_w && (dmem_waddr[3:2] == 2'b10))
+        sdram_data_in <= dmem_wdata;
+      // latch rd_valid and data; clear latch when CPU reads data register
+      if (sdram_rd_valid) begin
+        sdram_rd_valid_latch <= 1'b1;
+        sdram_data_latch     <= sdram_data_out;
+      end else if (sdram_data_rd) begin
+        sdram_rd_valid_latch <= 1'b0;
+      end
+    end
+  end
+
+  sdram_gw2ar #(
+      .DATA_WIDTH              (32),
+      .BANK_WIDTH              (2),
+      .ROW_WIDTH               (11),
+      .COLUMN_WIDTH            (8),
+      .CLOCK_FREQ_MHZ          (27),
+      .REFRESH_PERIOD_NS       (64_000_000),
+      .REFRESH_TIMES           (4096),
+      .INITIALIZATION_WAIT_PERIOD_NS(200_000),
+      .T_CL_PERIOD             (3),
+      .T_RP_PERIOD             (3),
+      .T_MRD_PERIOD            (3),
+      .T_WR_PERIOD             (3),
+      .T_RFC_PERIOD            (9),
+      .T_RCD_PERIOD            (3)
+  ) u_sdram (
+      .i_sdrc_rst_n       (rst_n),
+      .i_sdrc_clk         (i_clk),
+      .i_sdram_clk        (i_clk),
+      .i_sdrc_self_refresh(1'b0),
+      .i_sdrc_power_down  (1'b0),
+      .i_sdrc_wr_n        (sdram_wr_n),
+      .i_sdrc_rd_n        (sdram_rd_n),
+      .i_sdrc_addr        (sdram_addr_reg),
+      .i_sdrc_dqm         (4'b0000),
+      .i_sdrc_data_len    (8'd0),
+      .i_sdrc_data        (sdram_data_in),
+      .o_sdrc_data        (sdram_data_out),
+      .o_sdrc_init_done   (sdram_init_done),
+      .o_sdrc_busy_n      (sdram_busy_n),
+      .o_sdrc_rd_valid    (sdram_rd_valid),
+      .o_sdrc_wrd_ack     (sdram_wrd_ack),
+      .o_sdram_clk        (O_sdram_clk),
+      .o_sdram_cke        (O_sdram_cke),
+      .o_sdram_cs_n       (O_sdram_cs_n),
+      .o_sdram_cas_n      (O_sdram_cas_n),
+      .o_sdram_ras_n      (O_sdram_ras_n),
+      .o_sdram_wen_n      (O_sdram_wen_n),
+      .o_sdram_dqm        (O_sdram_dqm),
+      .o_sdram_addr       (O_sdram_addr),
+      .o_sdram_ba         (O_sdram_ba),
+      .io_sdram_dq        (IO_sdram_dq)
+  );
+
   // ── IMEM data-path read (for .rodata accessed via data bus) ──────────────
   // The same LUT-ROM is read combinatorially with dmem_raddr for data reads.
   wire [9:0] dmem_imem_idx = dmem_raddr[11:2];
@@ -278,6 +394,9 @@ module top #(
                              ? {31'b0, tx_busy}
                              : {23'b0, rx_valid_latch, rx_data_latch};
       4'b0100: dmem_rdata = sd_rd_mux;
+      4'b0101: dmem_rdata = (dmem_raddr[3:2] == 2'b00) ? {29'b0, sdram_rd_valid_latch, sdram_init_done, sdram_busy_n} :
+                            (dmem_raddr[3:2] == 2'b01) ? {11'b0, sdram_addr_reg} :
+                                                          sdram_data_latch;
       default: dmem_rdata = 32'b0;
     endcase
     dmem_rready = dmem_rvalid;
