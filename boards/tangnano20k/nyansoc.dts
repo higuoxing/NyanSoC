@@ -1,0 +1,84 @@
+/dts-v1/;
+
+/* NyanSoC Device Tree Source
+ *
+ * Target: Tang Nano 20K (Gowin GW2AR-18C)
+ * CPU:    NyanRV  RV32IMA_Zicsr, 1 hart, Sv32 MMU
+ * Clock:  27 MHz (no PLL)
+ *
+ * Boot flow:
+ *   Bootloader → OpenSBI (fw_jump) @ 0x8000_0000
+ *             → Linux kernel        @ 0x8020_0000
+ *             → DTB                 @ 0x8100_0000
+ */
+
+/ {
+	#address-cells = <1>;
+	#size-cells    = <1>;
+	compatible     = "nyansoc,tangnano20k";
+	model          = "NyanSoC Tang Nano 20K";
+
+	chosen {
+		bootargs   = "console=ttyS0,115200 earlycon=sbi";
+		stdout-path = &uart0;
+	};
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells    = <0>;
+		timebase-frequency = <27000000>;
+
+		cpu0: cpu@0 {
+			compatible      = "riscv";
+			device_type     = "cpu";
+			reg             = <0>;
+			riscv,isa       = "rv32ima_zicsr_zifencei";
+			mmu-type        = "riscv,sv32";
+			status          = "okay";
+
+			cpu0_intc: interrupt-controller {
+				#interrupt-cells = <1>;
+				compatible       = "riscv,cpu-intc";
+				interrupt-controller;
+			};
+		};
+	};
+
+	memory@80000000 {
+		device_type = "memory";
+		reg         = <0x80000000 0x02000000>;  /* 32 MB SDRAM */
+	};
+
+	soc {
+		#address-cells = <1>;
+		#size-cells    = <1>;
+		compatible     = "simple-bus";
+		ranges;
+
+		clint0: clint@2000000 {
+			compatible     = "riscv,clint0";
+			reg            = <0x02000000 0x10>;
+			interrupts-extended = <&cpu0_intc 3>,   /* MSI  (unused) */
+			                      <&cpu0_intc 7>;   /* MTIP */
+		};
+
+		plic0: interrupt-controller@c000000 {
+			#interrupt-cells    = <1>;
+			#address-cells      = <0>;
+			compatible          = "riscv,plic0";
+			interrupt-controller;
+			reg                 = <0x0c000000 0x00210000>;
+			riscv,ndev          = <1>;
+			interrupts-extended = <&cpu0_intc 9>;   /* S-mode external (SEIP) */
+		};
+
+		uart0: serial@30000 {
+			compatible  = "nyansoc,uart";
+			reg         = <0x00030000 0x8>;
+			interrupts  = <1>;
+			interrupt-parent = <&plic0>;
+			clock-frequency = <27000000>;
+			current-speed   = <115200>;
+		};
+	};
+};
