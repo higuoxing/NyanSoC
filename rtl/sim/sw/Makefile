@@ -139,6 +139,29 @@ test_smode: test_smode.hex nyanrv_smode_tb.vvp
 	    exit 1; \
 	fi
 
+# ── MMU test (uses dedicated testbench with page-table backing store) ─────────
+
+MMU_TB    := $(PROJ_ROOT)/rtl/sim/rtl/nyanrv_mmu_tb.v
+
+nyanrv_mmu_tb.vvp: $(MMU_TB) $(RTL)
+	iverilog -g2012 -o $@ $(RTL) $(MMU_TB)
+
+# test_mmu has its own _start and data at 0x0010_0000 (TLB entry 1)
+test_mmu.elf: asm/test_mmu.S link_mmu.ld
+	$(AS) $(ASFLAGS) -march=rv32ima_zicsr -T link_mmu.ld -march=rv32ima_zicsr -mabi=ilp32 -nostartfiles -nostdlib -Wl,--no-relax -o $@ asm/test_mmu.S
+
+.PHONY: test_mmu
+test_mmu: test_mmu.hex nyanrv_mmu_tb.vvp
+	@cp test_mmu.hex imem.hex
+	@result=$$(vvp nyanrv_mmu_tb.vvp 2>&1); \
+	if echo "$$result" | grep -q "^PASS"; then \
+	    echo "PASS  test_mmu"; \
+	else \
+	    echo "FAIL  test_mmu"; \
+	    echo "$$result" | sed 's/^/      /'; \
+	    exit 1; \
+	fi
+
 # Optional: run with waveform dump (+dump plusarg)
 .PHONY: waves
 waves: $(firstword $(TESTS)).hex nyanrv_tb.vvp

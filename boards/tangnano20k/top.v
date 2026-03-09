@@ -22,15 +22,19 @@
  *   0x0200_0004                CLINT mtime    hi (bits [63:32])  R/W
  *   0x0200_0008                CLINT mtimecmp lo (bits [31: 0])  R/W
  *   0x0200_000C                CLINT mtimecmp hi (bits [63:32])  R/W
+ *   0x8000_0000 - 0x81FF_FFFF  SDRAM direct mapping (32 MB, 21-bit word addr)
+ *                                 Reads/writes stall CPU until SDRAM ready.
+ *                                 This is where Linux lives (kernel + heap + stack).
  *
  * Address decode:
- *   bits [29:28] == 2'b10  -> CLINT  (0x0200_0000)
- *   bits [19:16] == 4'b0000 -> IMEM  (only via instruction bus)
- *   bits [19:16] == 4'b0001 -> DMEM
- *   bits [19:16] == 4'b0010 -> GPIO
- *   bits [19:16] == 4'b0011 -> UART
- *   bits [19:16] == 4'b0100 -> SD card controller
- *   bits [19:16] == 4'b0101 -> SDRAM controller
+ *   addr[31]    == 1           -> SDRAM direct (0x8000_0000–0x81FF_FFFF)
+ *   bits [29:28] == 2'b10     -> CLINT  (0x0200_0000)
+ *   bits [19:16] == 4'b0000   -> IMEM   (only via instruction bus)
+ *   bits [19:16] == 4'b0001   -> DMEM
+ *   bits [19:16] == 4'b0010   -> GPIO
+ *   bits [19:16] == 4'b0011   -> UART
+ *   bits [19:16] == 4'b0100   -> SD card controller
+ *   bits [19:16] == 4'b0101   -> SDRAM register-mapped (legacy)
  *
  * Reset: i_rst_n is the S1 button (active-low, pulled high at rest).
  * A power-on reset shift register (por_sr) guarantees reset is held for
@@ -98,6 +102,14 @@ module top #(
   wire [31:0] dmem_wdata;
   reg         dmem_wready;
 
+  // PTW port — page-table walker read-only bus.
+  // When the CPU is walking a page table it is stalled (no dmem_rvalid),
+  // so we share the read bus: mux ptw_addr onto dmem_raddr when ptw_valid.
+  wire [31:0] ptw_addr;
+  wire        ptw_valid;
+  wire [31:0] ptw_rdata;
+  wire        ptw_ready;
+
   wire        o_trap;
 
   // ── Instruction memory: combinatorial LUT-ROM ─────────────────────────────
@@ -111,25 +123,31 @@ module top #(
   end
 
   // ── Data BRAM ─────────────────────────────────────────────────────────────
-  // Four separate byte-wide BRAMs so each can be written independently.
-  // Gowin BRAM does not support sub-word byte-enable writes on a single
-  // 32-bit-wide instance, so we split into four 8-bit BRAMs instead.
-  reg [7:0] dmem0[0:DMEM_WORDS-1];  // bits  [7: 0]
-  reg [7:0] dmem1[0:DMEM_WORDS-1];  // bits [15: 8]
-  reg [7:0] dmem2[0:DMEM_WORDS-1];  // bits [23:16]
-  reg [7:0] dmem3[0:DMEM_WORDS-1];  // bits [31:24]
+  // Single 32-bit wide array with registered (synchronous) read port so
+  // yosys can infer Gowin BSRAM. Byte-enables are applied at write time.
+  reg [31:0] dmem [0:DMEM_WORDS-1];
+  reg [31:0] dmem_q;  // registered read output
 
   wire dmem_wsel = dmem_wvalid && (dmem_waddr[19:16] == 4'b0001);
 
-  wire [9:0] dmem_raddr_idx = dmem_raddr[11:2];
+  // Unified read address: PTW read takes priority when ptw_valid is asserted.
+  // The CPU is stalled (dmem_rvalid=0) during PTW walks, so no conflict arises.
+  // bus_raddr_full is declared later (after SDRAM section), alias it here for BRAM.
+  wire [31:0] bus_raddr  = ptw_valid ? ptw_addr  : dmem_raddr;
+  wire        bus_rvalid = ptw_valid ? 1'b1       : dmem_rvalid;
+
+  wire [9:0] dmem_raddr_idx = bus_raddr[11:2];
   wire [9:0] dmem_waddr_idx = dmem_waddr[11:2];
 
   always @(posedge i_clk) begin
+    // Synchronous read — output registered one cycle after address presented.
+    dmem_q <= dmem[dmem_raddr_idx];
+    // Byte-enable write.
     if (dmem_wsel) begin
-      if (dmem_wstrb[0]) dmem0[dmem_waddr_idx] <= dmem_wdata[ 7: 0];
-      if (dmem_wstrb[1]) dmem1[dmem_waddr_idx] <= dmem_wdata[15: 8];
-      if (dmem_wstrb[2]) dmem2[dmem_waddr_idx] <= dmem_wdata[23:16];
-      if (dmem_wstrb[3]) dmem3[dmem_waddr_idx] <= dmem_wdata[31:24];
+      if (dmem_wstrb[0]) dmem[dmem_waddr_idx][ 7: 0] <= dmem_wdata[ 7: 0];
+      if (dmem_wstrb[1]) dmem[dmem_waddr_idx][15: 8] <= dmem_wdata[15: 8];
+      if (dmem_wstrb[2]) dmem[dmem_waddr_idx][23:16] <= dmem_wdata[23:16];
+      if (dmem_wstrb[3]) dmem[dmem_waddr_idx][31:24] <= dmem_wdata[31:24];
     end
   end
 
@@ -263,11 +281,22 @@ module top #(
   );
 
   // ── SDRAM controller ──────────────────────────────────────────────────────
-  // Register map at 0x0005_xxxx (bits [3:2] select register):
-  //   +0x0  ctrl/status [R/W]  read: {29'b0, rd_valid, init_done, busy_n}
-  //                            write: bit0=wr_n, bit1=rd_n (active-low, single-cycle)
-  //   +0x4  address     [R/W]  21-bit word address
-  //   +0x8  data        [R]    last received data (valid when rd_valid=1)
+  // Two access modes share the same physical sdram_gw2ar instance:
+  //
+  //  A) Register-mapped (legacy, 0x0005_xxxx):
+  //       Lets firmware manually drive addr/data/cmd for diagnostics.
+  //       Register map at 0x0005_xxxx (bits [3:2] select register):
+  //         +0x0  ctrl/status [R/W]  read: {29'b0, rd_valid, init_done, busy_n}
+  //                                  write: bit0=wr_n, bit1=rd_n (active-low, single-cycle)
+  //         +0x4  address     [R/W]  21-bit word address
+  //         +0x8  data        [R]    last received data (valid when rd_valid=1)
+  //
+  //  B) Direct-mapped (0x8000_0000–0x81FF_FFFF):
+  //       CPU reads/writes are transparently translated to SDRAM commands.
+  //       The word address is addr[22:2] (byte address → 32-bit word index).
+  //       The CPU bus is stalled (rready=0 / wready=0) until the SDRAM
+  //       controller acknowledges the transaction.
+  //       Byte enables (dmem_wstrb) are forwarded as DQM (inverted).
 
   wire sdram_region_r = dmem_rvalid && (dmem_raddr[19:16] == 4'b0101);
   wire sdram_region_w = dmem_wvalid && (dmem_waddr[19:16] == 4'b0101);
@@ -278,42 +307,195 @@ module top #(
   wire        sdram_wrd_ack;
   wire [31:0] sdram_data_out;
 
-  reg  [20:0] sdram_addr_reg;
+  // ── SDRAM direct-map signals ───────────────────────────────────────────────
+  // addr[31] == 1 selects the direct-map region (0x8000_0000–0x81FF_FFFF).
+  // We must share the controller with the legacy register-mapped path, so
+  // direct-map accesses take priority over register-mapped ones (firmware
+  // should not use register-mapped access while a CPU load/store to SDRAM
+  // is in flight).
+
+  // Direct-map region decode.
+  // bus_raddr = ptw_valid ? ptw_addr : dmem_raddr  (declared above, near BRAM).
+  wire sdram_dm_r = (bus_raddr[31] == 1'b1) &&
+                    (bus_raddr[24:23] == 2'b00);  // 0x8000_0000–0x81FF_FFFF
+  wire sdram_dm_w = dmem_wvalid && (dmem_waddr[31] == 1'b1) &&
+                    (dmem_waddr[24:23] == 2'b00);
+
+  // The CPU data port asserts sdram_dm_r when bus_rvalid is high.
+  wire bus_rvalid_dm = bus_rvalid;
+
+  // Word address: bits [22:2] of the byte address give a 21-bit word index.
+  wire [20:0] sdram_dm_waddr   = dmem_waddr[22:2];
+  wire [20:0] sdram_dm_raddr_w = bus_raddr[22:2];
+
+  // ── SDRAM direct-map FSMs ─────────────────────────────────────────────────
+  //
+  //  IDLE  → latch addr/data → ISSUE
+  //  ISSUE → hold rd_n/wr_n=0; wait for wrd_ack=1 (command actually accepted,
+  //           not displaced by auto-refresh) → WAIT
+  //  WAIT  → read: wait for rd_valid. write: wait for busy_n=1
+  //  DONE  → hold rready/wready=1 for 1 cycle → IDLE
+  //
+  //  wrd_ack = ack_sr[1] in sdram_gw2ar: fires exactly 2 cycles after the
+  //  command is latched in STATE_IDLE. This is the authoritative signal that
+  //  the controller accepted our command (not an auto-refresh).
+  //
+  localparam [1:0] SDRDM_IDLE  = 2'd0,
+                   SDRDM_ISSUE = 2'd1,
+                   SDRDM_WAIT  = 2'd2,
+                   SDRDM_DONE  = 2'd3;
+  reg [1:0]  sdrdm_r_state;
+  reg [31:0] sdrdm_rdata_latch;
+  reg [20:0] sdrdm_raddr_lat;
+
+  localparam [1:0] SDWDM_IDLE  = 2'd0,
+                   SDWDM_ISSUE = 2'd1,
+                   SDWDM_WAIT  = 2'd2,
+                   SDWDM_DONE  = 2'd3;
+  reg [1:0]  sdrdm_w_state;
+
+  // Muxed SDRAM controller inputs (direct-map takes priority over legacy).
+  reg  [20:0] sdram_addr_in;
   reg  [31:0] sdram_data_in;
+  reg  [ 3:0] sdram_dqm_in;
+  reg         sdram_wr_n_in;
+  reg         sdram_rd_n_in;
+
+  // ── Legacy register-mapped state ──────────────────────────────────────────
+  reg  [20:0] sdram_addr_reg;
+  reg  [31:0] sdram_data_reg;
   reg  [31:0] sdram_data_latch;
-  // rd_valid is a single-cycle pulse from the controller — latch it so the
-  // CPU (running at the same clock but many cycles per instruction) can see it.
-  // Cleared when the CPU reads the data register (+0x8).
   reg         sdram_rd_valid_latch;
 
   wire sdram_data_rd = sdram_region_r && (dmem_raddr[3:2] == 2'b10);
-
-  // wr_n / rd_n are combinatorial: the controller latches addr+data+cmd in
-  // the same cycle, so all three must be valid simultaneously.
-  wire sdram_ctrl_w = sdram_region_w && (dmem_waddr[3:2] == 2'b00) && dmem_wstrb[0];
-  wire sdram_wr_n   = sdram_ctrl_w ? dmem_wdata[0] : 1'b1;
-  wire sdram_rd_n   = sdram_ctrl_w ? dmem_wdata[1] : 1'b1;
+  wire sdram_ctrl_w  = sdram_region_w && (dmem_waddr[3:2] == 2'b00) && dmem_wstrb[0];
+  wire sdram_leg_wr_n = sdram_ctrl_w ? dmem_wdata[0] : 1'b1;
+  wire sdram_leg_rd_n = sdram_ctrl_w ? dmem_wdata[1] : 1'b1;
 
   always @(posedge i_clk) begin
     if (!rst_n) begin
-      sdram_addr_reg      <= 21'd0;
-      sdram_data_in       <= 32'd0;
-      sdram_data_latch    <= 32'd0;
-      sdram_rd_valid_latch<= 1'b0;
+      sdram_addr_reg       <= 21'd0;
+      sdram_data_reg       <= 32'd0;
+      sdram_data_latch     <= 32'd0;
+      sdram_rd_valid_latch <= 1'b0;
     end else begin
-      // address register write
       if (sdram_region_w && (dmem_waddr[3:2] == 2'b01))
         sdram_addr_reg <= dmem_wdata[20:0];
-      // data register write
       if (sdram_region_w && (dmem_waddr[3:2] == 2'b10))
-        sdram_data_in <= dmem_wdata;
-      // latch rd_valid and data; clear latch when CPU reads data register
-      if (sdram_rd_valid) begin
+        sdram_data_reg <= dmem_wdata;
+      // Latch read data from legacy path (only when direct-map is idle).
+      if (sdram_rd_valid && (sdrdm_r_state == SDRDM_IDLE)) begin
         sdram_rd_valid_latch <= 1'b1;
         sdram_data_latch     <= sdram_data_out;
       end else if (sdram_data_rd) begin
         sdram_rd_valid_latch <= 1'b0;
       end
+    end
+  end
+
+  // ── Direct-map read FSM ────────────────────────────────────────────────────
+  // IDLE: wait for a read request targeting SDRAM.
+  always @(posedge i_clk) begin
+    if (!rst_n) begin
+      sdrdm_r_state    <= SDRDM_IDLE;
+      sdrdm_rdata_latch<= 32'd0;
+      sdrdm_raddr_lat  <= 21'd0;
+    end else begin
+      case (sdrdm_r_state)
+        SDRDM_IDLE: begin
+          if (sdram_dm_r && bus_rvalid_dm) begin
+            sdrdm_raddr_lat <= sdram_dm_raddr_w;
+            sdrdm_r_state   <= SDRDM_ISSUE;
+          end
+        end
+        SDRDM_ISSUE: begin
+          // Hold rd_n=0 (via mux). Wait for wrd_ack=1 which fires 2 cycles
+          // after the controller accepted our command in STATE_IDLE.
+          // If auto-refresh fires instead, wrd_ack stays 0 and we keep waiting.
+          if (sdram_wrd_ack)
+            sdrdm_r_state <= SDRDM_WAIT;
+        end
+        SDRDM_WAIT: begin
+          if (sdram_rd_valid) begin
+            sdrdm_rdata_latch <= sdram_data_out;
+            sdrdm_r_state     <= SDRDM_DONE;
+          end
+        end
+        SDRDM_DONE: begin
+          sdrdm_r_state <= SDRDM_IDLE;
+        end
+        default: sdrdm_r_state <= SDRDM_IDLE;
+      endcase
+    end
+  end
+
+  always @(posedge i_clk) begin
+    if (!rst_n) begin
+      sdrdm_w_state <= SDWDM_IDLE;
+    end else begin
+      case (sdrdm_w_state)
+        SDWDM_IDLE: begin
+          if (sdram_dm_w)
+            sdrdm_w_state <= SDWDM_ISSUE;
+        end
+        SDWDM_ISSUE: begin
+          // Hold wr_n=0 (via mux). wrd_ack=1 confirms command acceptance.
+          if (sdram_wrd_ack)
+            sdrdm_w_state <= SDWDM_WAIT;
+        end
+        SDWDM_WAIT: begin
+          // Wait for controller back in IDLE (write complete including recovery).
+          if (sdram_busy_n)
+            sdrdm_w_state <= SDWDM_DONE;
+        end
+        SDWDM_DONE: begin
+          sdrdm_w_state <= SDWDM_IDLE;
+        end
+        default: sdrdm_w_state <= SDWDM_IDLE;
+      endcase
+    end
+  end
+
+  // ── SDRAM controller input mux ─────────────────────────────────────────────
+  // Latch address/data when the FSM enters ISSUE:
+  //   - Read addr: latched into sdrdm_raddr_lat at IDLE→ISSUE.
+  //   - Write addr/data/strobe: latched into sdrdm_w*_lat at IDLE→ISSUE.
+  //     (CPU deasserts wvalid after seeing wready, so we must capture it first.)
+  reg [20:0] sdrdm_waddr_lat;
+  reg [31:0] sdrdm_wdata_lat;
+  reg [ 3:0] sdrdm_dqm_lat;
+
+  always @(posedge i_clk) begin
+    if (sdrdm_w_state == SDWDM_IDLE && sdram_dm_w) begin
+      sdrdm_waddr_lat <= sdram_dm_waddr;
+      sdrdm_wdata_lat <= dmem_wdata;
+      sdrdm_dqm_lat   <= ~dmem_wstrb;
+    end
+  end
+
+  always @(*) begin
+    if (sdrdm_r_state == SDRDM_ISSUE) begin
+      // Hold rd_n=0 continuously while waiting for wrd_ack (command acceptance).
+      // Auto-refresh will take priority in the controller; we keep rd_n=0 so
+      // the controller picks up the command as soon as it returns to IDLE.
+      sdram_addr_in = sdrdm_raddr_lat;
+      sdram_data_in = 32'd0;
+      sdram_dqm_in  = 4'b0000;
+      sdram_wr_n_in = 1'b1;
+      sdram_rd_n_in = 1'b0;
+    end else if (sdrdm_w_state == SDWDM_ISSUE) begin
+      sdram_addr_in = sdrdm_waddr_lat;
+      sdram_data_in = sdrdm_wdata_lat;
+      sdram_dqm_in  = sdrdm_dqm_lat;
+      sdram_wr_n_in = 1'b0;
+      sdram_rd_n_in = 1'b1;
+    end else begin
+      // Legacy register-mapped access.
+      sdram_addr_in = sdram_addr_reg;
+      sdram_data_in = sdram_data_reg;
+      sdram_dqm_in  = 4'b0000;
+      sdram_wr_n_in = sdram_leg_wr_n;
+      sdram_rd_n_in = sdram_leg_rd_n;
     end
   end
 
@@ -338,10 +520,10 @@ module top #(
       .i_sdram_clk        (i_clk),
       .i_sdrc_self_refresh(1'b0),
       .i_sdrc_power_down  (1'b0),
-      .i_sdrc_wr_n        (sdram_wr_n),
-      .i_sdrc_rd_n        (sdram_rd_n),
-      .i_sdrc_addr        (sdram_addr_reg),
-      .i_sdrc_dqm         (4'b0000),
+      .i_sdrc_wr_n        (sdram_wr_n_in),
+      .i_sdrc_rd_n        (sdram_rd_n_in),
+      .i_sdrc_addr        (sdram_addr_in),
+      .i_sdrc_dqm         (sdram_dqm_in),
       .i_sdrc_data_len    (8'd0),
       .i_sdrc_data        (sdram_data_in),
       .o_sdrc_data        (sdram_data_out),
@@ -425,8 +607,8 @@ module top #(
   wire irq_timer = (mtime >= mtimecmp);
 
   // ── IMEM data-path read (for .rodata accessed via data bus) ──────────────
-  // The same LUT-ROM is read combinatorially with dmem_raddr for data reads.
-  wire [9:0] dmem_imem_idx = dmem_raddr[11:2];
+  // The same LUT-ROM is read combinatorially with bus_raddr for data reads.
+  wire [9:0] dmem_imem_idx = bus_raddr[11:2];
   reg [31:0] dmem_imem_rdata;
   always @(*) begin
     case (dmem_imem_idx)
@@ -447,39 +629,69 @@ module top #(
   //  [4] rd_valid, [3] wr_ready, [2] err, [1] busy, [0] init_done
   wire [31:0] sd_status_word = {7'b0, sd_dbg_prev, sd_dbg_rx, sd_dbg_state,
                                 sd_rd_valid, sd_wr_ready, sd_err, sd_busy, sd_init_done};
-  wire [31:0] sd_rd_mux = (dmem_raddr[3:2] == 2'b00) ? sd_status_word :
-                           (dmem_raddr[3:2] == 2'b10) ? sd_addr_reg    :
-                           (dmem_raddr[3:2] == 2'b11) ? {24'b0, sd_rd_data} : 32'b0;
+  wire [31:0] sd_rd_mux = (bus_raddr[3:2] == 2'b00) ? sd_status_word :
+                           (bus_raddr[3:2] == 2'b10) ? sd_addr_reg    :
+                           (bus_raddr[3:2] == 2'b11) ? {24'b0, sd_rd_data} : 32'b0;
+
+  // Unified data read mux for both CPU DMEM reads and PTW reads.
+  reg [31:0] bus_rdata;
+  reg        bus_rready;
+
+  // Region decode for the unified bus address.
+  wire sdram_dm_region_bus = (bus_raddr[31] == 1'b1) && (bus_raddr[24:23] == 2'b00);
+  wire clint_region_bus    = (!sdram_dm_region_bus) && (bus_raddr[29:28] == 2'b10);
+
+  // DMEM uses synchronous read — register the valid signal to add 1-cycle latency.
+  wire dmem_region_bus = (!sdram_dm_region_bus) && (!clint_region_bus) &&
+                         (bus_raddr[19:16] == 4'b0001);
+  reg  bus_rvalid_d;
+  always @(posedge i_clk) bus_rvalid_d <= bus_rvalid && dmem_region_bus;
+
+  // SDRAM direct-map read: stall until the FSM signals rd_done.
+  // PTW reads to SDRAM are also handled here (sdram_dm_r covers ptw_addr).
 
   always @(*) begin
-    dmem_rready = dmem_rvalid;
-    if (clint_region_r) begin
-      // CLINT read: mtime and mtimecmp registers.
-      case (dmem_raddr[3:2])
-        2'b00:   dmem_rdata = mtime[31:0];
-        2'b01:   dmem_rdata = mtime[63:32];
-        2'b10:   dmem_rdata = mtimecmp[31:0];
-        2'b11:   dmem_rdata = mtimecmp[63:32];
-        default: dmem_rdata = 32'b0;
+    if (sdram_dm_region_bus) begin
+      // Deassert rready until the FSM reaches DONE (data in sdrdm_rdata_latch).
+      // DONE is a 1-cycle state: CPU samples rready=1 and latches rdata, then
+      // the FSM moves back to IDLE while the CPU advances to cpu_state_fetch.
+      bus_rready = (sdrdm_r_state == SDRDM_DONE);
+      bus_rdata  = sdrdm_rdata_latch;
+    end else if (clint_region_bus) begin
+      bus_rready = bus_rvalid;
+      case (bus_raddr[3:2])
+        2'b00:   bus_rdata = mtime[31:0];
+        2'b01:   bus_rdata = mtime[63:32];
+        2'b10:   bus_rdata = mtimecmp[31:0];
+        2'b11:   bus_rdata = mtimecmp[63:32];
+        default: bus_rdata = 32'b0;
       endcase
     end else begin
-      case (dmem_raddr[19:16])
-        4'b0000: dmem_rdata = dmem_imem_rdata;
-        4'b0001: dmem_rdata = {dmem3[dmem_raddr_idx],
-                                dmem2[dmem_raddr_idx],
-                                dmem1[dmem_raddr_idx],
-                                dmem0[dmem_raddr_idx]};
-        4'b0011: dmem_rdata = dmem_raddr[2]
-                               ? {31'b0, tx_busy}
-                               : {23'b0, rx_valid_latch, rx_data_latch};
-        4'b0100: dmem_rdata = sd_rd_mux;
-        4'b0101: dmem_rdata = (dmem_raddr[3:2] == 2'b00) ? {29'b0, sdram_rd_valid_latch, sdram_init_done, sdram_busy_n} :
-                              (dmem_raddr[3:2] == 2'b01) ? {11'b0, sdram_addr_reg} :
-                                                            sdram_data_latch;
-        default: dmem_rdata = 32'b0;
+      bus_rready = dmem_region_bus ? bus_rvalid_d : bus_rvalid;
+      case (bus_raddr[19:16])
+        4'b0000: bus_rdata = dmem_imem_rdata;
+        4'b0001: bus_rdata = dmem_q;
+        4'b0011: bus_rdata = bus_raddr[2]
+                              ? {31'b0, tx_busy}
+                              : {23'b0, rx_valid_latch, rx_data_latch};
+        4'b0100: bus_rdata = sd_rd_mux;
+        4'b0101: bus_rdata = (bus_raddr[3:2] == 2'b00) ? {29'b0, sdram_rd_valid_latch, sdram_init_done, sdram_busy_n} :
+                             (bus_raddr[3:2] == 2'b01) ? {11'b0, sdram_addr_reg} :
+                                                          sdram_data_latch;
+        default: bus_rdata = 32'b0;
       endcase
     end
   end
+
+  // CPU DMEM read port: forward from shared bus when not ptw.
+  always @(*) begin
+    dmem_rdata  = bus_rdata;
+    dmem_rready = ptw_valid ? 1'b0 : bus_rready;
+  end
+
+  // PTW read port: combinatorial pass-through from shared bus.
+  assign ptw_rdata = bus_rdata;
+  assign ptw_ready = ptw_valid ? bus_rready : 1'b0;
 
   // ── GPIO register ─────────────────────────────────────────────────────────
   wire gpio_wsel = dmem_wvalid && (dmem_waddr[19:16] == 4'b0010);
@@ -492,12 +704,24 @@ module top #(
 
   assign o_led = ~gpio_out;  // active-low: invert for the LED pins
 
-  always @(*) dmem_wready = dmem_wvalid;
+  // Write-ready: stall CPU for SDRAM direct-map writes.
+  // Signal ready only when the write FSM is in DONE state (wrd_ack received).
+  // For non-SDRAM destinations, ack immediately.
+  always @(*) begin
+    if (sdram_dm_w)
+      dmem_wready = (sdrdm_w_state == SDWDM_DONE);
+    else
+      dmem_wready = dmem_wvalid;
+  end
 
   // ── CPU ───────────────────────────────────────────────────────────────────
   nyanrv u_cpu (
       .i_clk          (i_clk),
       .i_rst_n        (rst_n),
+      .o_ptw_addr     (ptw_addr),
+      .o_ptw_valid    (ptw_valid),
+      .i_ptw_rdata    (ptw_rdata),
+      .i_ptw_ready    (ptw_ready),
       .o_imem_addr    (imem_addr),
       .o_imem_valid   (imem_valid),
       .i_imem_rdata   (imem_rdata),

@@ -203,6 +203,9 @@ _start:
     /* medeleg = 0: cause 9 (S-mode ecall) goes to M-mode */
     CSRRWI_RAW REG_x0, CSR_MEDELEG, 0
 
+    /* Clear satp (bare mode) so MMU is off when we enter S-mode */
+    CSRRWI_RAW REG_x0, CSR_SATP, 0
+
     /* Clear shared state */
     li   t0, M_TRAP_CAUSE; sw zero, 0(t0)
     li   t0, S_TRAP_COUNT; sw zero, 0(t0)

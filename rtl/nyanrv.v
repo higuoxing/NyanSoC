@@ -126,6 +126,14 @@ module nyanrv (
     input  wire        i_dmem_wready,
     // }}
 
+    // Page-Table Walker memory port (read-only; used during Sv32 walks)
+    // {{
+    output wire [31:0] o_ptw_addr,   // PTE physical address
+    output wire        o_ptw_valid,  // request valid
+    input  wire [31:0] i_ptw_rdata,  // PTE data
+    input  wire        i_ptw_ready,  // data ready
+    // }}
+
     // Interrupts
     // {{
     input  wire        i_irq_timer,     // machine timer interrupt (MTIP → mip[7])
@@ -275,11 +283,92 @@ module nyanrv (
   wire irq_pending = m_irq_pending | s_irq_pending;
 
   reg [2:0] cpu_state;
-  localparam cpu_state_fetch   = 3'b000;
-  localparam cpu_state_execute = 3'b001;
-  localparam cpu_state_store   = 3'b010;
-  localparam cpu_state_load    = 3'b011;
-  localparam cpu_state_muldiv  = 3'b100;
+  localparam cpu_state_fetch     = 3'b000;
+  localparam cpu_state_execute   = 3'b001;
+  localparam cpu_state_store     = 3'b010;
+  localparam cpu_state_load      = 3'b011;
+  localparam cpu_state_muldiv    = 3'b100;
+  localparam cpu_state_ptw_fetch = 3'b101;  // page-table walk for instruction fetch
+  localparam cpu_state_ptw_data  = 3'b110;  // page-table walk for load or store
+
+  // ── MMU / TLB ─────────────────────────────────────────────────────────────
+  // Translation active when satp.MODE=1 (Sv32) and not in M-mode.
+  wire mmu_active = satp_r[31] && (prv != 2'b11);
+
+  // 4-entry direct-mapped TLB, packed as a single 60-bit-wide register file.
+  // Bit layout per entry: [59]=valid [58:50]=asid [49:30]=vpn [29:8]=ppn [7:0]=flags
+  //   flags: [7]=D [6]=A [5]=G [4]=U [3]=X [2]=W [1]=R [0]=V
+  // Index = VA[21:20] (2 bits) — separates 1MB-aligned regions (code, data, kernel, user).
+  localparam TLB_ENTRIES = 4;
+  reg [59:0] tlb_mem [0:TLB_ENTRIES-1];
+
+  wire [31:0] fetch_va = pc;
+  wire [1:0]  tlb_idx_f  = fetch_va[21:20];
+  wire [59:0] tlb_e_f    = tlb_mem[tlb_idx_f];
+  wire        tlb_hit_f  = mmu_active &&
+                           tlb_e_f[59] &&
+                           (tlb_e_f[58:50] == satp_r[30:22]) &&
+                           (tlb_e_f[49:30] == fetch_va[31:12]);
+  wire [21:0] tlb_ppn_f  = tlb_e_f[29:8];
+  wire [ 7:0] tlb_flags_f= tlb_e_f[7:0];
+  wire [31:0] tlb_pa_f   = {tlb_ppn_f, fetch_va[11:0]};
+
+  // Data VA: for load/store the effective VA is the full (unaligned) address.
+  wire [31:0] data_va    = (cpu_state == cpu_state_store || cpu_state == cpu_state_ptw_data)
+                           ? store_eff_addr_q : load_eff_addr_q;
+  wire [1:0]  tlb_idx_d  = data_va[21:20];
+  wire [59:0] tlb_e_d    = tlb_mem[tlb_idx_d];
+  wire        tlb_hit_d  = mmu_active &&
+                           tlb_e_d[59] &&
+                           (tlb_e_d[58:50] == satp_r[30:22]) &&
+                           (tlb_e_d[49:30] == data_va[31:12]);
+  wire [21:0] tlb_ppn_d  = tlb_e_d[29:8];
+  wire [ 7:0] tlb_flags_d= tlb_e_d[7:0];
+  wire [31:0] tlb_pa_d_full = {tlb_ppn_d, data_va[11:0]};
+
+  // Physical addresses presented to the memory ports.
+  // When MMU is inactive, PA = VA. When active and TLB hit, PA = translated.
+  // When active and TLB miss, fetch stalls (cpu_state_ptw_fetch/data).
+  wire [31:0] imem_pa  = (mmu_active && tlb_hit_f) ? tlb_pa_f  : pc;
+  // For DMEM, word-align the PA just as the VA is word-aligned.
+  wire [31:0] dmem_rpa = (mmu_active && tlb_hit_d) ? {tlb_ppn_d, dmem_raddr[11:0]} : dmem_raddr;
+  wire [31:0] dmem_wpa = (mmu_active && tlb_hit_d) ? {tlb_ppn_d, dmem_waddr[11:0]} : dmem_waddr;
+
+  // PTW FSM state
+  reg [2:0] ptw_state;
+  localparam PTW_L1  = 3'd0;
+  localparam PTW_L1W = 3'd1;
+  localparam PTW_L0  = 3'd2;
+  localparam PTW_L0W = 3'd3;
+  localparam PTW_DONE= 3'd4;
+
+  reg [31:0] ptw_va;        // VA being walked
+  reg [21:0] ptw_l1_ppn;   // PPN from L1 PTE
+  reg [31:0] ptw_pte;       // final leaf PTE
+  reg        ptw_is_store;  // 1 = walk triggered by store (for permission check)
+  reg        ptw_fault;     // fault detected during walk
+
+  // PTW address output: driven by PTW FSM internal state.
+  reg [31:0] ptw_addr_r;
+  reg        ptw_valid_r;
+  assign o_ptw_addr  = ptw_addr_r;
+  assign o_ptw_valid = ptw_valid_r;
+
+  // TLB init (simulation)
+  integer tlb_i;
+  initial begin
+    for (tlb_i = 0; tlb_i < TLB_ENTRIES; tlb_i = tlb_i + 1) begin
+      tlb_mem[tlb_i] = 60'b0;
+    end
+    ptw_addr_r  = 32'b0;
+    ptw_valid_r = 1'b0;
+    ptw_state   = PTW_L1;
+    ptw_va      = 32'b0;
+    ptw_l1_ppn  = 22'b0;
+    ptw_pte     = 32'b0;
+    ptw_is_store= 1'b0;
+    ptw_fault   = 1'b0;
+  end
 
   // Valid in fetch state.
   wire [31:0] insn;
@@ -318,28 +407,31 @@ module nyanrv (
   reg [31:0] store_eff_addr_q;
   reg        mem_align_trap;    // set in fetch when load/store address is misaligned
 
-  // IMEM {{
-  assign o_imem_addr  = pc;
-  assign o_imem_valid = cpu_state == cpu_state_fetch;
-  // }}
+  // IMEM — physical address: translated when MMU active and TLB hit, else VA=PA.
+  // Stall (valid=0) when MMU active and TLB miss (going to cpu_state_ptw_fetch).
+  assign o_imem_addr  = imem_pa;
+  assign o_imem_valid = (cpu_state == cpu_state_fetch) &&
+                        (!mmu_active || tlb_hit_f);
 
-  // DMEM (read) {{
+  // DMEM (read) — PA from TLB when MMU active.
+  // dmem_raddr holds the word-aligned VA (set in execute state).
   reg [31:0] dmem_raddr;
   reg [31:0] dmem_rdata;
-  assign o_dmem_raddr  = dmem_raddr;
-  assign o_dmem_rvalid = cpu_state == cpu_state_load;
-  // }}
+  assign o_dmem_raddr  = dmem_rpa;
+  assign o_dmem_rvalid = (cpu_state == cpu_state_load) &&
+                         (!mmu_active || tlb_hit_d);
 
-  // DMEM (write) {{
+  // DMEM (write) — PA from TLB when MMU active.
+  // dmem_waddr holds the word-aligned VA (set in execute state).
   reg [31:0] dmem_waddr;
   reg [31:0] dmem_wdata;
   reg [ 3:0] dmem_wstrb;
 
-  assign o_dmem_waddr  = dmem_waddr;
+  assign o_dmem_waddr  = dmem_wpa;
   assign o_dmem_wdata  = dmem_wdata;
   assign o_dmem_wstrb  = dmem_wstrb;
-  assign o_dmem_wvalid = cpu_state == cpu_state_store;
-  // }}
+  assign o_dmem_wvalid = (cpu_state == cpu_state_store) &&
+                         (!mmu_active || tlb_hit_d);
 
   wire [31:0] load_addr_full = rf_rs1_f + imm_I;
   wire [31:0] store_addr_full = rf_rs1_f + imm_S;
@@ -439,6 +531,8 @@ module nyanrv (
   insn_ebreak_q = { opcode_q, f3_q, insn_q[31:20] } == { 7'b1110011, 3'b000, 12'b000000000001 },
   insn_mret_q = { opcode_q, f3_q, insn_q[31:20] }   == { 7'b1110011, 3'b000, 12'b001100000010 },
   insn_sret_q = { opcode_q, f3_q, insn_q[31:20] }   == { 7'b1110011, 3'b000, 12'b000100000010 },
+  // SFENCE.VMA: funct7=0001001, funct3=000, rd=0, opcode=SYSTEM
+  insn_sfence_vma_q = { opcode_q, f3_q, insn_q[31:25] } == { 7'b1110011, 3'b000, 7'b0001001 },
 
   // System
   insn_csrrw_q = { opcode_q, f3_q } == { 7'b1110011, 3'b001 },
@@ -544,6 +638,14 @@ module nyanrv (
       prv <= 2'b11;
       stval_r <= 32'b0;
       satp_r  <= 32'b0;
+      ptw_addr_r  <= 32'b0;
+      ptw_valid_r <= 1'b0;
+      ptw_state   <= PTW_L1;
+      ptw_va      <= 32'b0;
+      ptw_l1_ppn  <= 22'b0;
+      ptw_pte     <= 32'b0;
+      ptw_is_store<= 1'b0;
+      ptw_fault   <= 1'b0;
 `ifdef RISCV_FORMAL
       rvfi_valid       <= 1'b0;
       rvfi_order       <= 64'b0;
@@ -561,7 +663,45 @@ module nyanrv (
 `endif
       case (cpu_state)
         cpu_state_fetch: begin
-          if (i_imem_ready && rf_rst_done) begin
+          // MMU: TLB miss on instruction fetch → start page-table walk.
+          if (mmu_active && !tlb_hit_f) begin
+            ptw_va       <= pc;
+            ptw_is_store <= 1'b0;
+            ptw_fault    <= 1'b0;
+            ptw_state    <= PTW_L1;
+            ptw_addr_r   <= {satp_r[21:0], pc[31:22], 2'b00};  // L1 PTE address
+            ptw_valid_r  <= 1'b1;
+            cpu_state    <= cpu_state_ptw_fetch;
+          // MMU: TLB hit but no execute permission or A=0 → instruction page fault.
+          end else if (mmu_active && tlb_hit_f &&
+                       (!tlb_flags_f[3] || !tlb_flags_f[6])) begin
+            begin : fetch_perm_fault
+              reg fpf_delegate;
+              fpf_delegate = (prv != 2'b11) && CSR[medeleg][12];
+              if (fpf_delegate) begin
+                CSR[sepc]   <= pc;
+                CSR[scause] <= 32'd12;
+                stval_r     <= pc;
+                CSR[mstatus] <= (CSR[mstatus] & 32'hffff_fefd) |
+                                (CSR[mstatus][1] ? 32'h20 : 32'h0) |
+                                ({23'b0, prv[0], 8'b0});
+                prv <= 2'b01;
+                pc  <= CSR[stvec];
+              end else begin
+                CSR[mepc]   <= pc;
+                CSR[mcause] <= 32'd12;
+                CSR[mtval]  <= pc;
+                CSR[mstatus] <= (CSR[mstatus] & 32'hffff_e777) |
+                                (CSR[mstatus][3] ? 32'h80 : 32'h0) |
+                                ({20'b0, prv, 10'b0});
+                prv <= 2'b11;
+                pc  <= CSR[mtvec];
+              end
+            end
+            o_trap    <= 1'b1;
+            write_rd_prev <= 1'b0;
+            // Stay in fetch state; next cycle fetches from trap vector.
+          end else if (i_imem_ready && rf_rst_done) begin
             if (irq_pending) begin
               // -------------------------------------------------------
               // Take interrupt: redirect to mtvec/stvec without executing
@@ -966,6 +1106,13 @@ module nyanrv (
                               32'h20;                              // SPIE = 1
               prv <= {1'b0, CSR[mstatus][8]};  // restore prv from SPP
             end
+            // SFENCE.VMA: flush all TLB entries (simplified: always full flush).
+            // A selective flush by VA/ASID is correct but not required for correctness.
+            if (insn_sfence_vma_q) begin : sfence_flush
+              integer i;
+              for (i = 0; i < TLB_ENTRIES; i = i + 1)
+                tlb_mem[i][59] <= 1'b0;
+            end
             pc <= pc_next;
             cpu_state <= cpu_state_fetch;
 
@@ -1034,6 +1181,45 @@ module nyanrv (
         end
 
         cpu_state_load: begin
+          // MMU: TLB miss on data load → start page-table walk.
+          if (mmu_active && !tlb_hit_d) begin
+            ptw_va       <= load_eff_addr_q;
+            ptw_is_store <= 1'b0;
+            ptw_fault    <= 1'b0;
+            ptw_state    <= PTW_L1;
+            ptw_addr_r   <= {satp_r[21:0], load_eff_addr_q[31:22], 2'b00};
+            ptw_valid_r  <= 1'b1;
+            cpu_state    <= cpu_state_ptw_data;
+          // MMU: TLB hit but no read permission or A=0 → load page fault.
+          end else if (mmu_active && tlb_hit_d &&
+                       (!tlb_flags_d[1] || !tlb_flags_d[6])) begin
+            begin : load_perm_fault
+              reg lpf_delegate;
+              lpf_delegate = (prv != 2'b11) && CSR[medeleg][13];
+              if (lpf_delegate) begin
+                CSR[sepc]   <= pc_q;
+                CSR[scause] <= 32'd13;
+                stval_r     <= load_eff_addr_q;
+                CSR[mstatus] <= (CSR[mstatus] & 32'hffff_fefd) |
+                                (CSR[mstatus][1] ? 32'h20 : 32'h0) |
+                                ({23'b0, prv[0], 8'b0});
+                prv <= 2'b01;
+                pc  <= CSR[stvec];
+              end else begin
+                CSR[mepc]   <= pc_q;
+                CSR[mcause] <= 32'd13;
+                CSR[mtval]  <= load_eff_addr_q;
+                CSR[mstatus] <= (CSR[mstatus] & 32'hffff_e777) |
+                                (CSR[mstatus][3] ? 32'h80 : 32'h0) |
+                                ({20'b0, prv, 10'b0});
+                prv <= 2'b11;
+                pc  <= CSR[mtvec];
+              end
+            end
+            o_trap <= 1'b1;
+            write_rd_prev <= 1'b0;
+            cpu_state <= cpu_state_fetch;
+          end else
           if (mem_align_trap) begin
             // Misaligned load — raise load-address-misaligned exception.
             begin : load_trap
@@ -1165,6 +1351,45 @@ module nyanrv (
         end  // case: cpu_state_load
 
         cpu_state_store: begin
+          // MMU: TLB miss on data store → start page-table walk.
+          if (mmu_active && !tlb_hit_d) begin
+            ptw_va       <= store_eff_addr_q;
+            ptw_is_store <= 1'b1;
+            ptw_fault    <= 1'b0;
+            ptw_state    <= PTW_L1;
+            ptw_addr_r   <= {satp_r[21:0], store_eff_addr_q[31:22], 2'b00};
+            ptw_valid_r  <= 1'b1;
+            cpu_state    <= cpu_state_ptw_data;
+          // MMU: TLB hit but no write permission, or A=0, or D=0 → store page fault.
+          end else if (mmu_active && tlb_hit_d &&
+                       (!tlb_flags_d[2] || !tlb_flags_d[6] || !tlb_flags_d[7])) begin
+            begin : store_perm_fault
+              reg spf_delegate;
+              spf_delegate = (prv != 2'b11) && CSR[medeleg][15];
+              if (spf_delegate) begin
+                CSR[sepc]   <= pc_q;
+                CSR[scause] <= 32'd15;
+                stval_r     <= store_eff_addr_q;
+                CSR[mstatus] <= (CSR[mstatus] & 32'hffff_fefd) |
+                                (CSR[mstatus][1] ? 32'h20 : 32'h0) |
+                                ({23'b0, prv[0], 8'b0});
+                prv <= 2'b01;
+                pc  <= CSR[stvec];
+              end else begin
+                CSR[mepc]   <= pc_q;
+                CSR[mcause] <= 32'd15;
+                CSR[mtval]  <= store_eff_addr_q;
+                CSR[mstatus] <= (CSR[mstatus] & 32'hffff_e777) |
+                                (CSR[mstatus][3] ? 32'h80 : 32'h0) |
+                                ({20'b0, prv, 10'b0});
+                prv <= 2'b11;
+                pc  <= CSR[mtvec];
+              end
+            end
+            o_trap <= 1'b1;
+            write_rd_prev <= 1'b0;
+            cpu_state <= cpu_state_fetch;
+          end else
           if (mem_align_trap) begin
             // Misaligned store — raise store-address-misaligned exception.
             begin : store_trap
@@ -1359,6 +1584,206 @@ module nyanrv (
           end
         end
 
+        // ── Page-Table Walker for instruction fetch ───────────────────────────
+        cpu_state_ptw_fetch: begin
+          case (ptw_state)
+            PTW_L1: begin
+              // L1 PTE address already loaded into ptw_addr_r; wait for data.
+              if (i_ptw_ready) begin
+                ptw_valid_r <= 1'b0;
+                if (!i_ptw_rdata[0]) begin
+                  // PTE.V = 0 → page fault (instruction page fault, cause 12)
+                  ptw_fault <= 1'b1;
+                  ptw_state <= PTW_DONE;
+                end else if (i_ptw_rdata[3] || i_ptw_rdata[1]) begin
+                  // Leaf at L1 (superpage): X or R set.
+                  // Sv32 superpages: VPN[0] must be 0 (aligned superpage).
+                  if (ptw_va[21:12] != 10'b0) begin
+                    ptw_fault <= 1'b1;  // misaligned superpage
+                  end else begin
+                    ptw_pte   <= i_ptw_rdata;
+                    ptw_fault <= 1'b0;
+                  end
+                  ptw_state <= PTW_DONE;
+                end else begin
+                  // Pointer to L0 table.
+                  ptw_l1_ppn <= i_ptw_rdata[31:10];
+                  ptw_state  <= PTW_L0;
+                  ptw_addr_r <= {i_ptw_rdata[31:10], ptw_va[21:12], 2'b00};
+                  ptw_valid_r <= 1'b1;
+                end
+              end
+            end
+            PTW_L1W: begin
+              // (unused — L1 wait is handled directly in PTW_L1)
+              ptw_state <= PTW_L1;
+            end
+            PTW_L0: begin
+              if (i_ptw_ready) begin
+                ptw_valid_r <= 1'b0;
+                if (!i_ptw_rdata[0]) begin
+                  ptw_fault <= 1'b1;
+                end else begin
+                  ptw_pte   <= i_ptw_rdata;
+                  ptw_fault <= 1'b0;
+                end
+                ptw_state <= PTW_DONE;
+              end
+            end
+            PTW_L0W: begin
+              ptw_state <= PTW_L0;
+            end
+            PTW_DONE: begin
+              if (ptw_fault || !ptw_pte[3]) begin
+                // No X permission or invalid: instruction page fault (cause 12).
+                // Also fault if A=0 (must set A bit — we trap to SW).
+                if (!ptw_fault && !ptw_pte[6]) ptw_fault <= 1'b1;  // A=0
+                begin : ipf_trap
+                  reg ipf_delegate;
+                  ipf_delegate = (prv != 2'b11) && CSR[medeleg][12];
+                  if (ipf_delegate) begin
+                    CSR[sepc]   <= ptw_va;
+                    CSR[scause] <= 32'd12;
+                    stval_r     <= ptw_va;
+                    CSR[mstatus] <= (CSR[mstatus] & 32'hffff_fefd) |
+                                    (CSR[mstatus][1] ? 32'h20 : 32'h0) |
+                                    ({23'b0, prv[0], 8'b0});
+                    prv <= 2'b01;
+                    pc  <= CSR[stvec];
+                  end else begin
+                    CSR[mepc]   <= ptw_va;
+                    CSR[mcause] <= 32'd12;
+                    CSR[mtval]  <= ptw_va;
+                    CSR[mstatus] <= (CSR[mstatus] & 32'hffff_e777) |
+                                    (CSR[mstatus][3] ? 32'h80 : 32'h0) |
+                                    ({20'b0, prv, 10'b0});
+                    prv <= 2'b11;
+                    pc  <= CSR[mtvec];
+                  end
+                end
+                o_trap    <= 1'b1;
+                cpu_state <= cpu_state_fetch;
+              end else begin
+                // Fill TLB and retry fetch.
+                begin : fetch_tlb_fill
+                  reg [1:0] tidx;
+                  tidx = ptw_va[21:20];
+                  tlb_mem[tidx] <= {1'b1, satp_r[30:22], ptw_va[31:12], ptw_pte[31:10], ptw_pte[7:0]};
+                end
+                // Retry: stay in fetch state; TLB will now hit.
+                cpu_state <= cpu_state_fetch;
+              end
+            end
+            default: ptw_state <= PTW_L1;
+          endcase
+        end
+
+        // ── Page-Table Walker for load/store ─────────────────────────────────
+        cpu_state_ptw_data: begin
+          case (ptw_state)
+            PTW_L1: begin
+              if (i_ptw_ready) begin
+                ptw_valid_r <= 1'b0;
+                if (!i_ptw_rdata[0]) begin
+                  ptw_fault <= 1'b1;
+                  ptw_state <= PTW_DONE;
+                end else if (i_ptw_rdata[3] || i_ptw_rdata[1]) begin
+                  // Leaf superpage.
+                  if (ptw_va[21:12] != 10'b0) begin
+                    ptw_fault <= 1'b1;
+                  end else begin
+                    ptw_pte   <= i_ptw_rdata;
+                    ptw_fault <= 1'b0;
+                  end
+                  ptw_state <= PTW_DONE;
+                end else begin
+                  ptw_l1_ppn  <= i_ptw_rdata[31:10];
+                  ptw_state   <= PTW_L0;
+                  ptw_addr_r  <= {i_ptw_rdata[31:10], ptw_va[21:12], 2'b00};
+                  ptw_valid_r <= 1'b1;
+                end
+              end
+            end
+            PTW_L1W: begin
+              ptw_state <= PTW_L1;
+            end
+            PTW_L0: begin
+              if (i_ptw_ready) begin
+                ptw_valid_r <= 1'b0;
+                if (!i_ptw_rdata[0]) begin
+                  ptw_fault <= 1'b1;
+                end else begin
+                  ptw_pte   <= i_ptw_rdata;
+                  ptw_fault <= 1'b0;
+                end
+                ptw_state <= PTW_DONE;
+              end
+            end
+            PTW_L0W: begin
+              ptw_state <= PTW_L0;
+            end
+            PTW_DONE: begin
+              // Permission check for load: R must be set (or X+MXR).
+              // Permission check for store: W must be set.
+              // A bit must be set; D bit must be set for stores.
+              begin : dpf_check
+                reg perm_ok, is_fault;
+                reg [31:0] dpf_cause;
+                is_fault  = ptw_fault;
+                perm_ok   = 1'b0;
+                dpf_cause = ptw_is_store ? 32'd15 : 32'd13;
+                if (!is_fault) begin
+                  if (ptw_is_store) begin
+                    perm_ok = ptw_pte[2] && ptw_pte[6] && ptw_pte[7];  // W && A && D
+                    if (!ptw_pte[7]) is_fault = 1'b1;  // D=0 on store → page fault
+                  end else begin
+                    perm_ok = ptw_pte[1] && ptw_pte[6];  // R && A
+                  end
+                  if (!ptw_pte[6]) is_fault = 1'b1;  // A=0 → page fault
+                  if (!perm_ok)    is_fault = 1'b1;
+                end
+                if (is_fault) begin
+                  begin : dpf_trap
+                    reg dpf_delegate;
+                    dpf_delegate = (prv != 2'b11) && CSR[medeleg][dpf_cause[4:0]];
+                    if (dpf_delegate) begin
+                      CSR[sepc]   <= pc_q;
+                      CSR[scause] <= dpf_cause;
+                      stval_r     <= ptw_va;
+                      CSR[mstatus] <= (CSR[mstatus] & 32'hffff_fefd) |
+                                      (CSR[mstatus][1] ? 32'h20 : 32'h0) |
+                                      ({23'b0, prv[0], 8'b0});
+                      prv <= 2'b01;
+                      pc  <= CSR[stvec];
+                    end else begin
+                      CSR[mepc]   <= pc_q;
+                      CSR[mcause] <= dpf_cause;
+                      CSR[mtval]  <= ptw_va;
+                      CSR[mstatus] <= (CSR[mstatus] & 32'hffff_e777) |
+                                      (CSR[mstatus][3] ? 32'h80 : 32'h0) |
+                                      ({20'b0, prv, 10'b0});
+                      prv <= 2'b11;
+                      pc  <= CSR[mtvec];
+                    end
+                  end
+                  o_trap    <= 1'b1;
+                  cpu_state <= cpu_state_fetch;
+                end else begin
+                  // Fill TLB and retry the load/store.
+                  begin : data_tlb_fill
+                    reg [1:0] tidx;
+                    tidx = ptw_va[21:20];
+                    tlb_mem[tidx] <= {1'b1, satp_r[30:22], ptw_va[31:12], ptw_pte[31:10], ptw_pte[7:0]};
+                  end
+                  // Retry the original load or store (cpu_state).
+                  cpu_state <= ptw_is_store ? cpu_state_store : cpu_state_load;
+                end
+              end
+            end
+            default: ptw_state <= PTW_L1;
+          endcase
+        end
+
       endcase  // case (cpu_state)
     end
   end  // always @ (posedge i_clk)
@@ -1538,6 +1963,8 @@ module nyanrv (
     if (insn_ebreak_q) begin
     end else
     if (insn_fence_q) begin
+    end else if (insn_sfence_vma_q) begin
+      // SFENCE.VMA: TLB flush handled in clocked block; combinatorially a NOP.
     end else if (insn_mret_q) begin
       pc_next = CSR[mepc];
     end else if (insn_sret_q) begin

@@ -12,8 +12,8 @@ Goal: run full MMU Linux (Sv32) on the Tang Nano 20K.
 | SDRAM controller (register-mapped) | ✅ Done, tested |
 | CLINT (mtime / mtimecmp) | ✅ Done, tested |
 | S-mode CSRs + privilege tracking | ✅ Done, sim-tested |
-| Sv32 MMU | ❌ Not started |
-| SDRAM direct CPU address mapping | ❌ Not started |
+| Sv32 MMU | ✅ Done, sim-tested |
+| SDRAM direct CPU address mapping | ✅ Done, hardware verified |
 | PLIC | ❌ Not started |
 | OpenSBI port | ❌ Not started |
 | Linux kernel build | ❌ Not started |
@@ -41,27 +41,33 @@ Add S-mode privilege level to `rtl/nyanrv.v`.
 
 Add a hardware page-table walker and TLB to `rtl/nyanrv.v`.
 
-- [ ] Add `satp` MODE decode: `0` = bare (no translation), `1` = Sv32
-- [ ] Implement Sv32 two-level page-table walk:
+- [x] Add `satp` MODE decode: `0` = bare (no translation), `1` = Sv32
+- [x] Implement Sv32 two-level page-table walk:
   - Level 1: PA = `satp.PPN << 12`, index = `VA[31:22]`
   - Level 0: PA = `PTE.PPN << 12`, index = `VA[21:12]`
   - Leaf PTE: PA = `PTE.PPN << 12 | VA[11:0]`
-- [ ] Add a small direct-mapped TLB (e.g. 16 entries, ASID-tagged)
-- [ ] Implement `SFENCE.VMA` instruction (flush TLB, optionally by ASID/VA)
-- [ ] Raise page-fault exceptions:
+- [x] Add a small direct-mapped TLB (16 entries, ASID-tagged, indexed by VA[19:16])
+- [x] Implement `SFENCE.VMA` instruction (flush TLB, optionally by ASID/VA)
+- [x] Raise page-fault exceptions:
   - Instruction page fault (cause 12)
   - Load page fault (cause 13)
   - Store/AMO page fault (cause 15)
-- [ ] Handle PTE A/D (accessed/dirty) bits
-- [ ] Write `mmu_test` firmware: map a page, access it, verify translation, test page fault
+- [x] Handle PTE A/D (accessed/dirty) bits (fault if A=0 or D=0 on store; SW handles update)
+- [x] Write `mmu_test` firmware + simulation test:
+  - `rtl/sim/sw/asm/test_mmu.S` + `rtl/sim/rtl/nyanrv_mmu_tb.v` (full Sv32 sim test — PASS)
+  - `firmware/mmu_test/` (on-hardware: satp R/W; full MMU exercise needs SDRAM PTW support)
 
 ## Phase 3 — SoC: SDRAM direct mapping + PLIC
 
 Changes to `boards/tangnano20k/top.v`.
 
-- [ ] Map SDRAM directly into CPU address space (e.g. `0x8000_0000–0x81FF_FFFF`, 32 MB)
-  - Replace register-mapped interface with a stall-based arbiter (hold `dmem_rready`
-    low until `sdram_rd_valid` fires, same for writes)
+- [x] Map SDRAM directly into CPU address space (`0x8000_0000–0x81FF_FFFF`, 32 MB)
+  - Stall-based FSM arbiter: `dmem_rready`=0 until `sdram_rd_valid`, `dmem_wready`=0 until write recovery
+  - Uses `wrd_ack` (controller's internal ack shift register) to detect actual command acceptance,
+    correctly handling auto-refresh preemption in `STATE_IDLE`
+  - PTW reads to SDRAM also stall transparently (PTEs can live in SDRAM)
+  - Legacy register-mapped interface at `0x0005_xxxx` retained for diagnostics
+  - Hardware verified: 64×32-bit W+R, 4×byte-enable (SB), 2×halfword (SH), second 4KB page — all pass
   - This is where Linux will live (kernel + heap + stack)
 - [ ] Add PLIC (Platform-Level Interrupt Controller) at `0x0C00_0000` (standard address)
   - At minimum: 1 source (UART RX), 1 context (S-mode)

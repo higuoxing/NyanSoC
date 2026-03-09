@@ -30,7 +30,8 @@ $(BOARD).fs: $(BOARD).json
 $(BOARD).json: $(BOARD)-synth.json $(BOARD).cst
 	$(NEXTPNR) --top $(TOP_MODULE) --json $< --write $@ \
 	    --device "GW2AR-LV18QN88C8/I7" \
-	    --vopt family="GW2A-18C" --vopt cst=$(BOARD).cst
+	    --vopt family="GW2A-18C" --vopt cst=$(BOARD).cst \
+	    --placer-heap-cell-placement-timeout 500000000
 
 # imem_rom.vh must exist before synthesis so the `include resolves.
 $(BOARD)-synth.json: $(SOURCES) imem.hex imem_rom.vh imem_data_rom.vh

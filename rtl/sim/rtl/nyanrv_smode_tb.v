@@ -48,6 +48,11 @@ module nyanrv_smode_tb;
   wire [31:0] o_dmem_wdata;
   wire        i_dmem_wready;
 
+  wire [31:0] o_ptw_addr;
+  wire        o_ptw_valid;
+  reg  [31:0] i_ptw_rdata;
+  reg         i_ptw_ready;
+
   reg         i_irq_timer;
   reg         i_irq_external;
   wire        o_trap;
@@ -70,6 +75,12 @@ module nyanrv_smode_tb;
     i_dmem_rready = o_dmem_rvalid;
   end
 
+  // PTW port backed by dmem (S-mode test has no page tables; just return 0).
+  always @(*) begin
+    i_ptw_rdata = 32'b0;
+    i_ptw_ready = o_ptw_valid;
+  end
+
   wire [DMEM_ADDR_BITS-1:0] dmem_waddr_idx = o_dmem_waddr[DMEM_ADDR_BITS+1:2];
   always @(posedge i_clk) begin
     if (o_dmem_wvalid && dmem_waddr_idx < DMEM_WORDS) begin
@@ -84,6 +95,10 @@ module nyanrv_smode_tb;
   nyanrv u_dut (
       .i_clk         (i_clk),
       .i_rst_n       (i_rst_n),
+      .o_ptw_addr    (o_ptw_addr),
+      .o_ptw_valid   (o_ptw_valid),
+      .i_ptw_rdata   (i_ptw_rdata),
+      .i_ptw_ready   (i_ptw_ready),
       .o_imem_addr   (o_imem_addr),
       .o_imem_valid  (o_imem_valid),
       .i_imem_rdata  (i_imem_rdata),
