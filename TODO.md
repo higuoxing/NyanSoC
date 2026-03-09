@@ -15,7 +15,7 @@ Goal: run full MMU Linux (Sv32) on the Tang Nano 20K.
 | Sv32 MMU | ✅ Done, sim-tested |
 | SDRAM direct CPU address mapping | ✅ Done, hardware verified |
 | PLIC | ✅ Done, hardware verified |
-| OpenSBI port | ❌ Not started |
+| OpenSBI port | 🔄 In progress |
 | Linux kernel build | ❌ Not started |
 | SD card bootloader | ❌ Not started |
 
@@ -80,16 +80,21 @@ Changes to `boards/tangnano20k/top.v`.
 
 ## Phase 4 — Software: OpenSBI + Linux + rootfs
 
-- [ ] Port OpenSBI to NyanSoC:
-  - Platform config: `CLK_FREQ=27000000`, UART at `0x0003_0000`, CLINT at `0x0200_0000`
-  - Set `PLATFORM_RISCV_ISA = rv32ima`
-  - Load address: `0x8000_0000` (start of SDRAM)
-- [ ] Write Device Tree Source (`.dts`) for NyanSoC:
-  - CPU: RV32IMA, 1 hart
+- [x] Port OpenSBI to NyanSoC:
+  - `platform/nyansoc/` in `/Users/v/workspace/opensbi`
+  - Custom UART driver (`uart_nyansoc.c`) — not 8250-compatible
+  - ACLINT MTIMER at `0x0200_0000`, `has_64bit_mmio=false` (32-bit MMIO)
+  - PLIC at `0x0C00_0000`, 1 source, S-mode context 0, no M-mode context
+  - `fw_jump` firmware: loads at `0x8000_0000`, jumps to `0x8020_0000` (kernel), DTB at `0x8100_0000`
+  - Build: `make PLATFORM=nyansoc CROSS_COMPILE=riscv64-elf- FW_TEXT_START=0x80000000`
+  - Output: `build/platform/nyansoc/firmware/fw_jump.bin` (258 KB) — builds cleanly
+- [x] Write Device Tree Source (`.dts`) for NyanSoC:
+  - `boards/tangnano20k/nyansoc.dts`
+  - CPU: RV32IMA, 1 hart, Sv32 MMU, 27 MHz timebase
   - Memory: `0x8000_0000`, size `0x2000000` (32 MB)
-  - UART: `0x0003_0000`, compatible `ns16550a` or simple-bus
+  - UART: `0x0003_0000`, compatible `nyansoc,uart`
   - CLINT: `0x0200_0000`
-  - PLIC: `0x0C00_0000`
+  - PLIC: `0x0C00_0000`, 1 interrupt (UART RX)
 - [ ] Build Linux kernel (Sv32, RV32):
   - `CONFIG_ARCH_RV32I=y`, `CONFIG_SMP=n`, `CONFIG_MMU=y`
   - `CONFIG_SERIAL_EARLYCON=y`, `CONFIG_HVC_RISCV_SBI=y`
