@@ -14,7 +14,7 @@ Goal: run full MMU Linux (Sv32) on the Tang Nano 20K.
 | S-mode CSRs + privilege tracking | ✅ Done, sim-tested |
 | Sv32 MMU | ✅ Done, sim-tested |
 | SDRAM direct CPU address mapping | ✅ Done, hardware verified |
-| PLIC | ❌ Not started |
+| PLIC | ✅ Done, hardware verified |
 | OpenSBI port | ❌ Not started |
 | Linux kernel build | ❌ Not started |
 | SD card bootloader | ❌ Not started |
