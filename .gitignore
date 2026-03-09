@@ -4,10 +4,15 @@ boards/tangnano20k/imem_data_rom.vh
 
 # Firmware build artifacts
 firmware/**/*.elf
+firmware/**/*.bin
 firmware/**/*.hex
 firmware/**/imem_init.vh
 firmware/**/imem_rom.vh
 firmware/**/imem_data_rom.vh
+
+# Software build artifacts
+*.img
+boards/tangnano20k/*.dtb
 
 # Simulation build artifacts (rtl/sim/sw/)
 rtl/sim/sw/*.elf

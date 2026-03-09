@@ -28,8 +28,15 @@ help:
 	@echo "    firmware       Build blinky firmware (imem.hex + imem_rom.vh)"
 	@echo "    firmware-clean Remove firmware build artefacts"
 	@echo ""
+	@echo "  Software (OpenSBI + boot image)"
+	@echo "    opensbi        Build OpenSBI fw_jump.bin for NyanSoC"
+	@echo "    opensbi-clean  Clean OpenSBI build artefacts"
+	@echo "    sbi_stub       Build S-mode stub kernel for OpenSBI testing"
+	@echo "    sd-image       Build SD card boot image (nyansoc_sd.img)"
+	@echo "    sw-clean       Clean all software build artefacts"
+	@echo ""
 	@echo "  Housekeeping"
-	@echo "    clean          Clean everything (sim + firmware + board)"
+	@echo "    clean          Clean everything (sim + firmware + board + sw)"
 	@echo ""
 
 # ── Simulation ───────────────────────────────────────────────────────────────
@@ -76,8 +83,26 @@ firmware:
 firmware-clean:
 	$(MAKE) -C firmware/blinky clean
 
+# ── Software (OpenSBI + boot image) ──────────────────────────────────────────
+
+.PHONY: opensbi opensbi-clean sbi_stub sbi_stub-clean sd-image sw-clean
+opensbi:
+	$(MAKE) -C sw opensbi
+
+opensbi-clean:
+	$(MAKE) -C sw opensbi-clean
+
+sbi_stub:
+	$(MAKE) -C sw sbi_stub
+
+sd-image:
+	$(MAKE) -C sw sd-image
+
+sw-clean:
+	$(MAKE) -C sw clean
+
 # ── Clean all ─────────────────────────────────────────────────────────────────
 
 .PHONY: clean
-clean: board-clean firmware-clean
+clean: board-clean firmware-clean sw-clean
 	$(MAKE) -C rtl/sim/sw clean

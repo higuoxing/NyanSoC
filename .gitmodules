@@ -1,3 +1,6 @@
 [submodule "formal/riscv-formal"]
 	path = formal/riscv-formal
 	url = https://github.com/YosysHQ/riscv-formal.git
+[submodule "sw/opensbi"]
+	path = sw/opensbi
+	url = https://github.com/riscv-software-src/opensbi.git
