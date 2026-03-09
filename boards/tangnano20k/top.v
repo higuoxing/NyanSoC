@@ -22,13 +22,19 @@
  *   0x0200_0004                CLINT mtime    hi (bits [63:32])  R/W
  *   0x0200_0008                CLINT mtimecmp lo (bits [31: 0])  R/W
  *   0x0200_000C                CLINT mtimecmp hi (bits [63:32])  R/W
+ *   0x0C00_0004                PLIC source 1 priority            R/W  (3-bit)
+ *   0x0C00_1000                PLIC pending  word 0              R    (bit[1]=UART RX)
+ *   0x0C00_2000                PLIC enable   context 0 word 0   R/W  (bit[1]=UART RX)
+ *   0x0C20_0000                PLIC threshold context 0          R/W  (3-bit)
+ *   0x0C20_0004                PLIC claim/complete context 0     R/W
  *   0x8000_0000 - 0x81FF_FFFF  SDRAM direct mapping (32 MB, 21-bit word addr)
  *                                 Reads/writes stall CPU until SDRAM ready.
  *                                 This is where Linux lives (kernel + heap + stack).
  *
- * Address decode:
+ * Address decode (priority order):
  *   addr[31]    == 1           -> SDRAM direct (0x8000_0000–0x81FF_FFFF)
  *   bits [29:28] == 2'b10     -> CLINT  (0x0200_0000)
+ *   bits [27:26] == 2'b11     -> PLIC   (0x0C00_0000)
  *   bits [19:16] == 4'b0000   -> IMEM   (only via instruction bus)
  *   bits [19:16] == 4'b0001   -> DMEM
  *   bits [19:16] == 4'b0010   -> GPIO
@@ -606,6 +612,31 @@ module top #(
   // Timer interrupt: asserted when mtime >= mtimecmp (unsigned comparison).
   wire irq_timer = (mtime >= mtimecmp);
 
+  // ── PLIC ──────────────────────────────────────────────────────────────────
+  // Base address 0x0C00_0000.  Decode: addr[27:26] == 2'b11 selects PLIC.
+  // The PLIC address offset passed in is addr[23:0] (24 bits, up to 16 MB).
+  wire plic_region_r = dmem_rvalid  && !dmem_raddr[31] && (dmem_raddr[27:26] == 2'b11);
+  wire plic_region_w = dmem_wvalid  && !dmem_waddr[31] && (dmem_waddr[27:26] == 2'b11);
+
+  wire [31:0] plic_rdata;
+  wire        plic_rready;
+  wire        irq_external;
+
+  // UART RX fires a 1-cycle pulse (rx_valid_raw) — use as the PLIC source.
+  plic u_plic (
+      .i_clk    (i_clk),
+      .i_rst_n  (rst_n),
+      .i_src    ({rx_valid_raw, 1'b0}),   // [1]=UART RX, [0]=reserved
+      .i_addr   (dmem_rvalid ? dmem_raddr[23:0] : dmem_waddr[23:0]),
+      .i_rvalid (plic_region_r),
+      .o_rdata  (plic_rdata),
+      .o_rready (plic_rready),
+      .i_wvalid (plic_region_w),
+      .i_wstrb  (dmem_wstrb),
+      .i_wdata  (dmem_wdata),
+      .o_irq    (irq_external)
+  );
+
   // ── IMEM data-path read (for .rodata accessed via data bus) ──────────────
   // The same LUT-ROM is read combinatorially with bus_raddr for data reads.
   wire [9:0] dmem_imem_idx = bus_raddr[11:2];
@@ -640,10 +671,12 @@ module top #(
   // Region decode for the unified bus address.
   wire sdram_dm_region_bus = (bus_raddr[31] == 1'b1) && (bus_raddr[24:23] == 2'b00);
   wire clint_region_bus    = (!sdram_dm_region_bus) && (bus_raddr[29:28] == 2'b10);
+  wire plic_region_bus     = (!sdram_dm_region_bus) && (!clint_region_bus) &&
+                             (!bus_raddr[31]) && (bus_raddr[27:26] == 2'b11);
 
   // DMEM uses synchronous read — register the valid signal to add 1-cycle latency.
   wire dmem_region_bus = (!sdram_dm_region_bus) && (!clint_region_bus) &&
-                         (bus_raddr[19:16] == 4'b0001);
+                         (!plic_region_bus) && (bus_raddr[19:16] == 4'b0001);
   reg  bus_rvalid_d;
   always @(posedge i_clk) bus_rvalid_d <= bus_rvalid && dmem_region_bus;
 
@@ -666,6 +699,9 @@ module top #(
         2'b11:   bus_rdata = mtimecmp[63:32];
         default: bus_rdata = 32'b0;
       endcase
+    end else if (plic_region_bus) begin
+      bus_rready = plic_rready;
+      bus_rdata  = plic_rdata;
     end else begin
       bus_rready = dmem_region_bus ? bus_rvalid_d : bus_rvalid;
       case (bus_raddr[19:16])
@@ -736,7 +772,7 @@ module top #(
       .o_dmem_wdata   (dmem_wdata),
       .i_dmem_wready  (dmem_wready),
       .i_irq_timer    (irq_timer),
-      .i_irq_external (1'b0),
+      .i_irq_external (irq_external),
       .o_trap         (o_trap)
   );
 

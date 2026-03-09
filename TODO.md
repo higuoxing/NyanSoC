@@ -69,11 +69,14 @@ Changes to `boards/tangnano20k/top.v`.
   - Legacy register-mapped interface at `0x0005_xxxx` retained for diagnostics
   - Hardware verified: 64×32-bit W+R, 4×byte-enable (SB), 2×halfword (SH), second 4KB page — all pass
   - This is where Linux will live (kernel + heap + stack)
-- [ ] Add PLIC (Platform-Level Interrupt Controller) at `0x0C00_0000` (standard address)
-  - At minimum: 1 source (UART RX), 1 context (S-mode)
-  - Registers: priority, pending, enable, threshold, claim/complete
-  - Wire PLIC interrupt output to `i_irq_external` on the CPU
-- [ ] Update memory map comment and README
+- [x] Add PLIC (Platform-Level Interrupt Controller) at `0x0C00_0000` (standard address)
+  - 1 source (UART RX, source ID=1), 1 context (S-mode hart 0)
+  - Registers: priority (0x4), pending (0x1000), enable (0x2000), threshold (0x200000), claim/complete (0x200004)
+  - Edge-triggered pending on `rx_valid_raw` rising edge; claim clears pending
+  - `irq_external` wired to `i_irq_external` on the CPU (was hard-wired to 0)
+  - RTL unit test: `rtl/sim/rtl/plic_tb.v` — 15/15 checks pass in simulation
+  - Hardware firmware: `firmware/plic_test/` — bitstream built and flashed
+- [x] Update memory map comment and README
 
 ## Phase 4 — Software: OpenSBI + Linux + rootfs
 

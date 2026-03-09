@@ -10,6 +10,7 @@ SOURCES   += $(ROOT_DIR)/rtl/uart/uart_rx.v
 SOURCES   += $(ROOT_DIR)/rtl/uart/uart_tx.v
 SOURCES   += $(ROOT_DIR)/rtl/sdspi/sdspi.v
 SOURCES   += $(ROOT_DIR)/rtl/gowin/sdram_gw2ar.v
+SOURCES   += $(ROOT_DIR)/rtl/plic.v
 SOURCES   += $(TOP_MODULE).v
 
 all: $(BOARD).fs
