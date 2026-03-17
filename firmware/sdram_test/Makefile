@@ -1,4 +1,4 @@
-CROSS   ?= riscv32-unknown-elf
+CROSS   ?= riscv64-elf
 CC      := $(CROSS)-gcc
 OBJCOPY := $(CROSS)-objcopy
 OBJDUMP := $(CROSS)-objdump
