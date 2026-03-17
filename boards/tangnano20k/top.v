@@ -118,14 +118,32 @@ module top #(
 
   wire        o_trap;
 
-  // ── Instruction memory: combinatorial LUT-ROM ─────────────────────────────
-  // A pure combinatorial case ROM synthesises reliably to LUTs.
-  // $readmemh-based BRAM init is unreliable with the open-source Gowin flow.
+  // ── Instruction memory ────────────────────────────────────────────────────
+  // Addresses with bit 31 = 0 are served by the combinatorial LUT-ROM.
+  // Addresses with bit 31 = 1 are fetched from SDRAM via the shared data-bus
+  // arbiter — this enables uart_loader to upload and execute code in SDRAM
+  // (0x8000_0000 – 0x81FF_FFFF) without reflashing the FPGA.
   wire [9:0] imem_idx = imem_addr[11:2];
+  wire       imem_from_sdram = imem_addr[31] & imem_valid;
 
+  // LUT-ROM: combinatorial case ROM (renamed to imem_lut_rdata by the Makefile
+  // sed pass so the SDRAM mux below can override without a multiple-driver error).
+  reg [31:0] imem_lut_rdata;
   always @(*) begin
     `include "imem_rom.vh"
-    imem_ready = imem_valid;
+  end
+
+  // Final IMEM output mux.  bus_rdata / bus_rready are defined further below
+  // (after the SDRAM arbiter section); Verilog combinatorial always blocks may
+  // reference signals declared later in the file.
+  always @(*) begin
+    if (imem_from_sdram) begin
+      imem_rdata = bus_rdata;
+      imem_ready = bus_rready;
+    end else begin
+      imem_rdata = imem_lut_rdata;
+      imem_ready = imem_valid;
+    end
   end
 
   // ── Data BRAM ─────────────────────────────────────────────────────────────
@@ -136,11 +154,16 @@ module top #(
 
   wire dmem_wsel = dmem_wvalid && (dmem_waddr[19:16] == 4'b0001);
 
-  // Unified read address: PTW read takes priority when ptw_valid is asserted.
-  // The CPU is stalled (dmem_rvalid=0) during PTW walks, so no conflict arises.
-  // bus_raddr_full is declared later (after SDRAM section), alias it here for BRAM.
-  wire [31:0] bus_raddr  = ptw_valid ? ptw_addr  : dmem_raddr;
-  wire        bus_rvalid = ptw_valid ? 1'b1       : dmem_rvalid;
+  // Unified read address mux — priority: PTW > IMEM-from-SDRAM > DMEM.
+  // PTW: CPU is stalled (dmem_rvalid=0, imem_valid still set but we ignore it).
+  // IMEM-from-SDRAM: CPU is stalled at fetch; dmem_rvalid=0 during fetch stall.
+  // DMEM: normal data read.
+  wire [31:0] bus_raddr  = ptw_valid        ? ptw_addr   :
+                           imem_from_sdram   ? imem_addr  :
+                                              dmem_raddr;
+  wire        bus_rvalid = ptw_valid        ? 1'b1        :
+                           imem_from_sdram   ? 1'b1        :
+                                              dmem_rvalid;
 
   wire [9:0] dmem_raddr_idx = bus_raddr[11:2];
   wire [9:0] dmem_waddr_idx = dmem_waddr[11:2];
@@ -719,11 +742,12 @@ module top #(
     end
   end
 
-  // CPU DMEM read port: forward from shared bus when not ptw.
+  // CPU DMEM read port: forward from shared bus when not ptw or imem-sdram.
   always @(*) begin
     dmem_rdata  = bus_rdata;
-    dmem_rready = ptw_valid ? 1'b0 : bus_rready;
+    dmem_rready = (ptw_valid || imem_from_sdram) ? 1'b0 : bus_rready;
   end
+
 
   // PTW read port: combinatorial pass-through from shared bus.
   assign ptw_rdata = bus_rdata;

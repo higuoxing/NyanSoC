@@ -21,7 +21,9 @@ all: $(BOARD).fs
 imem.hex imem_rom.vh imem_data_rom.vh: FORCE
 	make -C $(PROG_DIR)
 	cp $(PROG_DIR)/imem.hex .
-	cp $(PROG_DIR)/imem_rom.vh .
+	# Rename the assigned variable so top.v can use imem_lut_rdata as an
+	# intermediate and override it for the SDRAM instruction-fetch path.
+	sed 's/imem_rdata/imem_lut_rdata/g' $(PROG_DIR)/imem_rom.vh > imem_rom.vh
 	cp $(PROG_DIR)/imem_data_rom.vh .
 
 # ── FPGA bitstream ────────────────────────────────────────────────────────────
