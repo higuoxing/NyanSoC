@@ -10,7 +10,7 @@
 #define UART_TX  ((volatile unsigned int *)0x00030004)
 
 /* ~27 MHz / 2 instr per iter / 2 Hz ≈ 6 750 000 iters → ~0.5 s between lines */
-#define DELAY_ITERS 6750000
+#define DELAY_ITERS 675000
 
 static void uart_putc(unsigned char c)
 {

@@ -350,7 +350,10 @@ module top #(
   wire sdram_dm_w = dmem_wvalid && (dmem_waddr[31] == 1'b1) &&
                     (dmem_waddr[24:23] == 2'b00);
 
-  // The CPU data port asserts sdram_dm_r when bus_rvalid is high.
+  // bus_rvalid_dm: the FSM trigger. For PTW and DMEM reads this is the natural
+  // one-cycle bus_rvalid pulse. For IMEM-SDRAM fetches bus_rvalid stays high
+  // the entire time the CPU is stalled, so we use it directly — the FSM
+  // re-trigger guard is handled by the SDRDM_DONE_HOLD state below.
   wire bus_rvalid_dm = bus_rvalid;
 
   // Word address: bits [22:2] of the byte address give a 21-bit word index.
@@ -369,11 +372,12 @@ module top #(
   //  command is latched in STATE_IDLE. This is the authoritative signal that
   //  the controller accepted our command (not an auto-refresh).
   //
-  localparam [1:0] SDRDM_IDLE  = 2'd0,
-                   SDRDM_ISSUE = 2'd1,
-                   SDRDM_WAIT  = 2'd2,
-                   SDRDM_DONE  = 2'd3;
-  reg [1:0]  sdrdm_r_state;
+  localparam [2:0] SDRDM_IDLE      = 3'd0,
+                   SDRDM_ISSUE     = 3'd1,
+                   SDRDM_WAIT      = 3'd2,
+                   SDRDM_DONE      = 3'd3,
+                   SDRDM_DONE_HOLD = 3'd4;  // extra idle cycle so CPU deasserts valid
+  reg [2:0]  sdrdm_r_state;
   reg [31:0] sdrdm_rdata_latch;
   reg [20:0] sdrdm_raddr_lat;
 
@@ -451,6 +455,13 @@ module top #(
           end
         end
         SDRDM_DONE: begin
+          // Assert rready for one cycle so the CPU latches rdata, then hold
+          // one extra cycle (DONE_HOLD) before returning to IDLE.  This gives
+          // the CPU time to deassert imem_valid (advance the PC) so the FSM
+          // does not immediately re-trigger on the same stale imem_valid.
+          sdrdm_r_state <= SDRDM_DONE_HOLD;
+        end
+        SDRDM_DONE_HOLD: begin
           sdrdm_r_state <= SDRDM_IDLE;
         end
         default: sdrdm_r_state <= SDRDM_IDLE;
@@ -712,6 +723,8 @@ module top #(
       // DONE is a 1-cycle state: CPU samples rready=1 and latches rdata, then
       // the FSM moves back to IDLE while the CPU advances to cpu_state_fetch.
       bus_rready = (sdrdm_r_state == SDRDM_DONE);
+      // DONE_HOLD: rready=0, FSM is idle-but-blocked; CPU sees rready=0 and
+      // deasserts imem_valid before FSM returns to IDLE on the next cycle.
       bus_rdata  = sdrdm_rdata_latch;
     end else if (clint_region_bus) begin
       bus_rready = bus_rvalid;
