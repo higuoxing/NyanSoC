@@ -15,8 +15,9 @@ Goal: run full MMU Linux (Sv32) on the Tang Nano 20K.
 | Sv32 MMU | ✅ Done, sim-tested |
 | SDRAM direct CPU address mapping | ✅ Done, hardware verified |
 | PLIC | ✅ Done, hardware verified |
-| OpenSBI port | 🔄 In progress |
-| Linux kernel build | ❌ Not started |
+| OpenSBI port | ✅ Done, hardware verified |
+| UART loader + SDRAM instruction fetch | ✅ Done, hardware verified |
+| Linux kernel build | 🔄 WIP — configs ready, needs Linux build host |
 | SD card bootloader | ❌ Not started |
 
 ---
@@ -81,13 +82,13 @@ Changes to `boards/tangnano20k/top.v`.
 ## Phase 4 — Software: OpenSBI + Linux + rootfs
 
 - [x] Port OpenSBI to NyanSoC:
-  - `platform/nyansoc/` in `/Users/v/workspace/opensbi`
+  - `platform/nyansoc/` in `sw/opensbi-platform/` (synced into `sw/opensbi` at build time)
   - Custom UART driver (`uart_nyansoc.c`) — not 8250-compatible
   - ACLINT MTIMER at `0x0200_0000`, `has_64bit_mmio=false` (32-bit MMIO)
   - PLIC at `0x0C00_0000`, 1 source, S-mode context 0, no M-mode context
   - `fw_jump` firmware: loads at `0x8000_0000`, jumps to `0x8020_0000` (kernel), DTB at `0x8100_0000`
-  - Build: `make PLATFORM=nyansoc CROSS_COMPILE=riscv64-elf- FW_TEXT_START=0x80000000`
-  - Output: `build/platform/nyansoc/firmware/fw_jump.bin` (258 KB) — builds cleanly
+  - Build: `make -C sw opensbi` (applies no-PIE patch, syncs platform files, builds)
+  - Output: `sw/opensbi/build/platform/nyansoc/firmware/fw_jump.bin` (258 KB) — builds cleanly
 - [x] Write Device Tree Source (`.dts`) for NyanSoC:
   - `boards/tangnano20k/nyansoc.dts`
   - CPU: RV32IMA, 1 hart, Sv32 MMU, 27 MHz timebase
@@ -95,22 +96,59 @@ Changes to `boards/tangnano20k/top.v`.
   - UART: `0x0003_0000`, compatible `nyansoc,uart`
   - CLINT: `0x0200_0000`
   - PLIC: `0x0C00_0000`, 1 interrupt (UART RX)
-- [ ] Build Linux kernel (Sv32, RV32):
-  - `CONFIG_ARCH_RV32I=y`, `CONFIG_SMP=n`, `CONFIG_MMU=y`
-  - `CONFIG_SERIAL_EARLYCON=y`, `CONFIG_HVC_RISCV_SBI=y`
-  - Load address: `0x8020_0000` (after OpenSBI)
-- [ ] Build minimal rootfs with BusyBox using Buildroot
-- [ ] Pack initramfs into kernel image
+  - Compiled to `boards/tangnano20k/nyansoc.dtb` with `dtc`
+- [x] Add UART loader firmware + SDRAM instruction fetch:
+  - `firmware/uart_loader/` — bare-metal firmware in IMEM LUT-ROM
+  - Protocol: `L`(oad) / `G`(o) / `D`(ump) / `P`(ing) over UART at 115200 baud
+  - `scripts/uart_load.py` — host-side Python script (load, go, run, dump, ping)
+  - `firmware/start_ram.S` + `firmware/link_ram.ld` — shared CRT0/linker for RAM-loaded programs
+    - Sets `mtvec`, disables interrupts, pushes `mtimecmp` to `0xFFFFFFFF_FFFFFFFF` before `main`
+  - RTL change (`boards/tangnano20k/top.v`): when `imem_addr[31]=1`, instruction fetch is routed
+    through the SDRAM arbiter instead of the LUT-ROM, enabling execution from SDRAM
+  - SDRAM FSM extended with `SDRDM_DONE_HOLD` state to prevent re-triggering on the same
+    fetch beat (CPU holds `imem_valid` high for one extra cycle after `imem_ready` fires)
+  - Hardware verified: `hello_world` runs stably from SDRAM over UART loader
+- [ ] Build Linux kernel (Sv32, RV32): **WIP — configs ready, needs Linux build host**
+  - Config: `sw/linux-nyansoc.config` (RV32IMA, Sv32, SBI console `hvc0`, initramfs, no 8250)
+  - Load address: `0x8020_0000` (after OpenSBI); kernel cmdline: `console=hvc0 earlycon=sbi`
+  - Blocked on macOS: Linux kernel build requires `elf.h` and other Linux-only host headers
+  - **To build on a Linux machine:**
+    ```bash
+    make -C linux ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- \
+        KCONFIG_CONFIG=/path/to/NyanSoC/sw/linux-nyansoc.config \
+        -j$(nproc) Image
+    ```
+- [ ] Build minimal rootfs with BusyBox using Buildroot: **WIP — config ready**
+  - Config: `sw/buildroot-nyansoc.config` (RV32IMA, musl toolchain, BusyBox, Linux 6.6, initramfs)
+  - **To build on a Linux machine:**
+    ```bash
+    make -C buildroot BR2_DEFCONFIG=/path/to/NyanSoC/sw/buildroot-nyansoc.config defconfig
+    make -C buildroot -j$(nproc)
+    ```
+- [ ] Load Linux over UART (once kernel is built):
+  - Transfer times at 115200 baud: OpenSBI ~23s, kernel ~3–8 min, DTB ~0s
+  - Load sequence:
+    ```bash
+    python3 scripts/uart_load.py -p /dev/ttyUSB0 load sw/opensbi/.../fw_jump.bin 0x80000000
+    python3 scripts/uart_load.py -p /dev/ttyUSB0 load linux/arch/riscv/boot/Image  0x80200000
+    python3 scripts/uart_load.py -p /dev/ttyUSB0 load boards/tangnano20k/nyansoc.dtb 0x81000000
+    python3 scripts/uart_load.py -p /dev/ttyUSB0 go 0x80000000 --stay
+    ```
 
 ## Phase 5 — Boot: SD card bootloader
 
-- [ ] Write a bare-metal bootloader firmware (fits in 4 KiB IMEM LUT-ROM):
-  - Waits for SDRAM init
-  - Reads OpenSBI binary from SD card into `0x8000_0000`
-  - Reads DTB from SD card into `0x8100_0000` (or appended to OpenSBI)
-  - Reads kernel image from SD card into `0x8020_0000`
-  - Jumps to OpenSBI entry point
-- [ ] Define SD card image layout (partition or raw sector offsets)
+- [x] Write bare-metal SD card bootloader (`firmware/bootloader/`):
+  - Fits in 4 KiB IMEM LUT-ROM; default firmware when `FW=bootloader`
+  - Waits for SDRAM and SD card init, then loads from raw sectors:
+    - Sectors 1–516: `fw_jump.bin` (OpenSBI, 258 KB) → `0x8000_0000`
+    - Sectors 517–524: stub kernel (8 sectors) → `0x8020_0000`
+    - Sectors 525–532: `nyansoc.dtb` (8 sectors) → `0x8100_0000`
+  - Jumps to OpenSBI entry with `a0=0` (hartid), `a1=0x8100_0000` (DTB PA)
+- [x] Define SD card image layout (`scripts/make_sd_image.sh`):
+  - Raw sector layout, no partition table
+  - Script assembles `nyansoc_sd.img` from `fw_jump.bin`, kernel, and DTB
+- [ ] Replace stub kernel with real Linux `Image` in SD card layout once kernel is built
+- [ ] Update `make_sd_image.sh` sector counts for actual kernel size
 
 ---
 
