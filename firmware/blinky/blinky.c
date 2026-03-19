@@ -13,7 +13,7 @@
 
 #define GPIO_BASE   ((volatile unsigned int *)0x00020000)
 #define NUM_LEDS    6
-#define DELAY_ITERS 3375000
+#define DELAY_ITERS 1375000
 
 /* Bare-metal delay: the compiler is free to eliminate a pure C countdown
  * loop with no observable side effects. A two-instruction asm loop is the
