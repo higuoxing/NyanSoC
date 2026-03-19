@@ -12,7 +12,7 @@ SRCS    := start.S hello_world.c
 
 # Load address used when building a flat .bin for uart_loader.
 # Default: DMEM base.  Override: make BIN_ADDR=0x80000000
-BIN_ADDR ?= 0x00010000
+BIN_ADDR ?= 0x80000000
 
 AWK_HEXTODEC := function hextodec(h,  i,v,c){v=0;h=toupper(h);for(i=1;i<=length(h);i++){c=index("0123456789ABCDEF",substr(h,i,1))-1;v=v*16+c};return v} {gsub(/\r/,"",$$0)}
 
