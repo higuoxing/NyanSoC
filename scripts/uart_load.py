@@ -113,17 +113,37 @@ def cmd_go(ser, addr: int, stay: bool = False):
             sys.stdout.flush()
         return
 
-    # Stay connected: stream output until Ctrl+C
-    print("--- program output (Ctrl+C to exit) ---")
-    ser.timeout = 0.1
+    # Stay connected: full bidirectional terminal (Ctrl+C to exit)
+    print("--- terminal (Ctrl+C to exit) ---")
+    import os
+    import select
+    import tty
+    import termios
+
+    ser.timeout = 0
+    old_settings = termios.tcgetattr(sys.stdin.fileno())
     try:
+        tty.setraw(sys.stdin.fileno())
         while True:
-            data = ser.read(256)
-            if data:
-                sys.stdout.write(data.decode("ascii", errors="replace"))
-                sys.stdout.flush()
+            rlist, _, _ = select.select([ser, sys.stdin], [], [], 0.05)
+            for src in rlist:
+                if src is ser:
+                    data = ser.read(256)
+                    if data:
+                        sys.stdout.buffer.write(data)
+                        sys.stdout.buffer.flush()
+                else:
+                    ch = sys.stdin.buffer.read(1)
+                    if ch == b'\x03':   # Ctrl+C
+                        raise KeyboardInterrupt
+                    if ch:
+                        ser.write(ch)
     except KeyboardInterrupt:
-        print("\n--- disconnected ---")
+        pass
+    finally:
+        termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_settings)
+        sys.stdout.write("\n--- disconnected ---\n")
+        sys.stdout.flush()
 
 
 def cmd_dump(ser, addr: int, length: int):

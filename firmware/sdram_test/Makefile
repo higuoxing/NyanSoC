@@ -10,7 +10,10 @@ LDFLAGS := -T link.ld -march=rv32i -mabi=ilp32 -nostdlib \
 
 SRCS    := start.S sdram_test.c
 
-.PHONY: all clean dis
+# Load address for uart_loader flat binary.
+BIN_ADDR ?= 0x80000000
+
+.PHONY: all clean dis bin
 
 all: imem.hex imem_init.vh imem_rom.vh imem_data_rom.vh
 
@@ -44,8 +47,19 @@ imem_data_rom.vh: imem.hex
 sdram_test.elf: $(SRCS) link.ld
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(SRCS)
 
+# Flat binary linked at BIN_ADDR for uart_loader.
+# Uses start_ram.S (stack in SDRAM) instead of start.S (stack in DMEM).
+bin: sdram_test.bin
+sdram_test.bin: sdram_test.c ../start_ram.S ../link_ram.ld
+	$(CC) $(CFLAGS) -T ../link_ram.ld -Wl,--defsym,RAM_BASE=$(BIN_ADDR) \
+	    -march=rv32im_zicsr -mabi=ilp32 -nostdlib -nostartfiles -Wl,--no-relax \
+	    -o sdram_test_ram.elf ../start_ram.S sdram_test.c
+	$(OBJCOPY) -O binary sdram_test_ram.elf $@
+	@ls -la $@
+
 dis: sdram_test.elf
 	$(OBJDUMP) -d $<
 
 clean:
-	rm -f sdram_test.elf imem.hex imem_init.vh imem_rom.vh imem_data_rom.vh
+	rm -f sdram_test.elf sdram_test_ram.elf sdram_test.bin \
+	      imem.hex imem_init.vh imem_rom.vh imem_data_rom.vh

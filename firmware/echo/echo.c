@@ -30,7 +30,6 @@ static void uart_puts(const char *s)
         uart_putc((unsigned char)*s++);
 }
 
-/* Stack-allocated buffer — avoids any DMEM static variable issues. */
 int main(void)
 {
     char buffer[64];
