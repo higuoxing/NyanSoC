@@ -4,12 +4,13 @@
  * All sequencing (issue, wait for ack, wait for ready) is handled by the
  * hardware FSM in top.v — the firmware just does ordinary loads and stores.
  *
- * The test data region starts at 0x8010_0000 (1 MiB above the load address)
- * to avoid aliasing with the executing code and its instruction-fetch stream.
+ * The test data region starts at 0x8010_0000 (1 MiB above the load address),
+ * well above the ~1 KiB binary so writes don't clobber executing code.
+ * The direct-map window covers all of 0x8000_0000–0xFFFF_FFFF (bit[31]==1).
  *
  * Memory map:
  *   0x8000_0000  code/stack (loaded here by uart_loader)
- *   0x8010_0000  test data region (well above the ~1 KiB binary)
+ *   0x8010_0000  test data region
  *   0x0003_0004  UART TX  write: send byte; read: {31'b0, busy}
  */
 

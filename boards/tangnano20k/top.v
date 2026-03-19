@@ -343,12 +343,13 @@ module top #(
   // should not use register-mapped access while a CPU load/store to SDRAM
   // is in flight).
 
-  // Direct-map region decode.
-  // bus_raddr = ptw_valid ? ptw_addr : dmem_raddr  (declared above, near BRAM).
-  wire sdram_dm_r = (bus_raddr[31] == 1'b1) &&
-                    (bus_raddr[24:23] == 2'b00);  // 0x8000_0000–0x81FF_FFFF
-  wire sdram_dm_w = dmem_wvalid && (dmem_waddr[31] == 1'b1) &&
-                    (dmem_waddr[24:23] == 2'b00);
+  // Direct-map region decode: any address with bit[31]=1 maps to SDRAM.
+  // Covers 0x8000_0000–0xFFFF_FFFF; the 21-bit word address is taken from
+  // bits[22:2] so only the bottom 32 MiB (0x8000_0000–0x81FF_FFFF) is
+  // actually reachable, but the decode is intentionally wide so that the
+  // full stack range (e.g. 0x801F_FFFC) and any future expansion are covered.
+  wire sdram_dm_r = (bus_raddr[31] == 1'b1);
+  wire sdram_dm_w = dmem_wvalid && (dmem_waddr[31] == 1'b1);
 
   // bus_rvalid_dm: the FSM trigger. For PTW and DMEM reads this is the natural
   // one-cycle bus_rvalid pulse. For IMEM-SDRAM fetches bus_rvalid stays high
@@ -487,7 +488,10 @@ module top #(
     end else begin
       case (sdrdm_w_state)
         SDWDM_IDLE: begin
-          if (sdram_dm_w)
+          // Also wait for any in-flight read to finish before issuing a write,
+          // otherwise both FSMs could be in ISSUE simultaneously.  The mux
+          // gives the read FSM priority, so the write wrd_ack would never fire.
+          if (sdram_dm_w && (sdrdm_r_state == SDRDM_IDLE))
             sdrdm_w_state <= SDWDM_ISSUE;
         end
         SDWDM_ISSUE: begin
@@ -518,7 +522,7 @@ module top #(
   reg [ 3:0] sdrdm_dqm_lat;
 
   always @(posedge i_clk) begin
-    if (sdrdm_w_state == SDWDM_IDLE && sdram_dm_w) begin
+    if (sdrdm_w_state == SDWDM_IDLE && sdram_dm_w && (sdrdm_r_state == SDRDM_IDLE)) begin
       sdrdm_waddr_lat <= sdram_dm_waddr;
       sdrdm_wdata_lat <= dmem_wdata;
       sdrdm_dqm_lat   <= ~dmem_wstrb;
@@ -714,8 +718,8 @@ module top #(
   reg [31:0] bus_rdata;
   reg        bus_rready;
 
-  // Region decode for the unified bus address.
-  wire sdram_dm_region_bus = (bus_raddr[31] == 1'b1) && (bus_raddr[24:23] == 2'b00);
+  // Region decode for the unified bus address — matches sdram_dm_r above.
+  wire sdram_dm_region_bus = (bus_raddr[31] == 1'b1);
   wire clint_region_bus    = (!sdram_dm_region_bus) && (bus_raddr[29:28] == 2'b10);
   wire plic_region_bus     = (!sdram_dm_region_bus) && (!clint_region_bus) &&
                              (!bus_raddr[31]) && (bus_raddr[27:26] == 2'b11);
