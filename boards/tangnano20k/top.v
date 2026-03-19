@@ -377,6 +377,10 @@ module top #(
                    SDRDM_WAIT      = 3'd2,
                    SDRDM_DONE      = 3'd3,
                    SDRDM_DONE_HOLD = 3'd4;  // extra idle cycle so CPU deasserts valid
+  // Disable FSM extraction for the same reason as sdrdm_w_state: state
+  // comparisons appear in separate always blocks that Yosys would not update
+  // if it re-encoded the FSM with auto encoding.
+  (* fsm_encoding = "none" *)
   reg [2:0]  sdrdm_r_state;
   reg [31:0] sdrdm_rdata_latch;
   reg [20:0] sdrdm_raddr_lat;
@@ -385,6 +389,11 @@ module top #(
                    SDWDM_ISSUE = 2'd1,
                    SDWDM_WAIT  = 2'd2,
                    SDWDM_DONE  = 2'd3;
+  // Disable FSM extraction: the write latch block (below) uses sdrdm_w_state
+  // in a separate always block that Yosys cannot see as part of the FSM ctrl
+  // outputs.  If Yosys re-encodes the FSM the localparam values no longer
+  // match the synthesised state bits, breaking the latch enable condition.
+  (* fsm_encoding = "none" *)
   reg [1:0]  sdrdm_w_state;
 
   // Muxed SDRAM controller inputs (direct-map takes priority over legacy).
@@ -436,7 +445,10 @@ module top #(
     end else begin
       case (sdrdm_r_state)
         SDRDM_IDLE: begin
-          if (sdram_dm_r && bus_rvalid_dm) begin
+          // Block read until any in-flight write completes. Without this, a
+          // continuous stream of instruction fetches keeps busy_n=0 and the
+          // write FSM (SDWDM_WAIT) never sees a clear busy_n=1 window.
+          if (sdram_dm_r && bus_rvalid_dm && (sdrdm_w_state == SDWDM_IDLE)) begin
             sdrdm_raddr_lat <= sdram_dm_raddr_w;
             sdrdm_r_state   <= SDRDM_ISSUE;
           end
