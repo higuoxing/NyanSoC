@@ -21,7 +21,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-OPENSBI_DIR="/Users/v/workspace/opensbi"
+OPENSBI_DIR="${REPO_ROOT}/sw/opensbi"
 OUTPUT="${1:-${REPO_ROOT}/nyansoc_sd.img}"
 
 FW_JUMP="${OPENSBI_DIR}/build/platform/nyansoc/firmware/fw_jump.bin"
@@ -31,9 +31,8 @@ DTB="${REPO_ROOT}/boards/tangnano20k/nyansoc.dtb"
 # ── Build prerequisites if needed ────────────────────────────────────────────
 
 if [ ! -f "${FW_JUMP}" ]; then
-    echo "Building OpenSBI fw_jump..."
-    make -C "${OPENSBI_DIR}" PLATFORM=nyansoc CROSS_COMPILE=riscv64-elf- \
-         FW_TEXT_START=0x80000000
+    echo "Building OpenSBI fw_jump (via sw/Makefile)..."
+    make -C "${REPO_ROOT}/sw" opensbi
 fi
 
 if [ ! -f "${STUB}" ]; then

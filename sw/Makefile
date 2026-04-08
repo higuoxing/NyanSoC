@@ -13,6 +13,11 @@ OPENSBI_DIR   := $(ROOT_DIR)/sw/opensbi
 PLATFORM_DIR  := $(ROOT_DIR)/sw/opensbi-platform
 STUB_DIR      := $(ROOT_DIR)/firmware/sbi_stub
 
+# OpenSBI must be built with GNU make. If `make` is shadowed (e.g. IDE stub named "make"
+# on PATH), recursive $(MAKE) breaks; prefer gmake or /usr/bin/make.
+GNU_MAKE      := $(shell command -v gmake 2>/dev/null || echo /usr/bin/make)
+SUBMAKE       := $(if $(findstring cursor,$(MAKE)),$(GNU_MAKE),$(MAKE))
+
 CROSS_COMPILE ?= riscv64-elf-
 FW_TEXT_START ?= 0x80000000
 
@@ -34,7 +39,7 @@ $(OPENSBI_OUT): $(PLATFORM_DIR) $(OPENSBI_DIR)/Makefile
 	@echo "==> Syncing platform files..."
 	@cp -r $(PLATFORM_DIR)/. $(OPENSBI_DIR)/platform/nyansoc/
 	@echo "==> Building OpenSBI..."
-	$(MAKE) -C $(OPENSBI_DIR) \
+	$(SUBMAKE) -C $(OPENSBI_DIR) \
 	    PLATFORM=nyansoc \
 	    CROSS_COMPILE=$(CROSS_COMPILE) \
 	    FW_TEXT_START=$(FW_TEXT_START)
@@ -44,8 +49,8 @@ $(OPENSBI_OUT): $(PLATFORM_DIR) $(OPENSBI_DIR)/Makefile
 
 .PHONY: opensbi-clean
 opensbi-clean:
-	$(MAKE) -C $(OPENSBI_DIR) distclean 2>/dev/null || \
-	    $(MAKE) -C $(OPENSBI_DIR) clean 2>/dev/null || true
+	$(SUBMAKE) -C $(OPENSBI_DIR) distclean 2>/dev/null || \
+	    $(SUBMAKE) -C $(OPENSBI_DIR) clean 2>/dev/null || true
 
 # ── S-mode stub kernel ────────────────────────────────────────────────────────
 

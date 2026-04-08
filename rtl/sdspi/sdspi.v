@@ -104,6 +104,8 @@ module sdspi #(
 
   // ── Received byte register ────────────────────────────────────────────────
   reg [7:0] recv_data;
+  // In-progress shift: full byte implied by recv_data and next MISO (NBA-safe).
+  wire [7:0] recv_shift_complete = {recv_data[6:0], i_spi_miso};
 
   // ── FSM state encoding ────────────────────────────────────────────────────
   localparam [5:0]
@@ -147,6 +149,8 @@ module sdspi #(
   reg        is_sdhc;
   reg        err_r;
   reg [31:0] addr_latch;
+  // SDSC: CMD17/24 take byte address; SDHC/XC: block (512 B) address.
+  wire [31:0] rw_arg = is_sdhc ? i_addr : {i_addr[22:0], 9'b0};
 
   // Debug latches
   reg [5:0]  prev_state_r;
@@ -341,6 +345,11 @@ module sdspi #(
             recv_data <= {recv_data[6:0], i_spi_miso};
             if (bit_counter == 10'd0) begin
               if (byte_counter > 10'd0) begin
+                // CMD58: first OCR byte (while byte_counter is still 2) is OCR[31:24];
+                // CCS (SDHC/XC block addressing) is OCR bit 30. Use assembled byte
+                // (recv not updated until NBA) so the last shift is included.
+                if (return_state == S_CMD58_RESP && byte_counter == 10'd2)
+                  is_sdhc <= recv_shift_complete[6];
                 byte_counter <= byte_counter - 10'd1;
                 bit_counter  <= 10'd7;
               end else begin
@@ -439,8 +448,7 @@ module sdspi #(
         end
 
         S_CMD58_RESP: begin
-          // Assume SDHC (card ≥2 GB). Deassert CS now that init is done.
-          is_sdhc   <= 1'b1;
+          // is_sdhc latched from OCR CCS in S_RECV_BYTE (CMD58 path).
           fast_mode <= 1'b1;
           cs_n_r    <= 1'b0;    // deassert CS entering idle
           state     <= S_IDLE;
@@ -462,7 +470,7 @@ module sdspi #(
           if (i_rd) begin
             addr_latch   <= i_addr;
             // CMD17: READ_SINGLE_BLOCK
-            cmd_out      <= {16'hFF_51, i_addr, 8'hFF};
+            cmd_out      <= {16'hFF_51, rw_arg, 8'hFF};
             bit_counter  <= 10'd55;
             return_state <= S_READ_BLOCK;
             cs_n_r       <= 1'b1;
@@ -470,7 +478,7 @@ module sdspi #(
           end else if (i_wr) begin
             addr_latch   <= i_addr;
             // CMD24: WRITE_BLOCK
-            cmd_out      <= {16'hFF_58, i_addr, 8'hFF};
+            cmd_out      <= {16'hFF_58, rw_arg, 8'hFF};
             bit_counter  <= 10'd55;
             return_state <= S_WRITE_BLOCK;
             cs_n_r       <= 1'b1;

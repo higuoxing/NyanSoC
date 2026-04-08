@@ -152,7 +152,7 @@ module top #(
   reg [31:0] dmem [0:DMEM_WORDS-1];
   reg [31:0] dmem_q;  // registered read output
 
-  wire dmem_wsel = dmem_wvalid && (dmem_waddr[19:16] == 4'b0001);
+  wire dmem_wsel = dmem_wvalid && !dmem_waddr[31] && (dmem_waddr[19:16] == 4'b0001);
 
   // Unified read address mux — priority: PTW > IMEM-from-SDRAM > DMEM.
   // PTW: CPU is stalled (dmem_rvalid=0, imem_valid still set but we ignore it).
@@ -181,7 +181,7 @@ module top #(
   end
 
   // ── UART TX ───────────────────────────────────────────────────────────────
-  wire uart_tx_wr = dmem_wvalid && (dmem_waddr[19:16] == 4'b0011)
+  wire uart_tx_wr = dmem_wvalid && !dmem_waddr[31] && (dmem_waddr[19:16] == 4'b0011)
                     && dmem_waddr[2] && dmem_wstrb[0];
   wire tx_busy;
 
@@ -237,8 +237,8 @@ module top #(
   //   +0x8  address [R/W] 32-bit block address
   //   +0xC  data    [R/W] write=push byte to TX FIFO, read=pop byte from RX FIFO
 
-  wire sd_region_r = dmem_rvalid && (dmem_raddr[19:16] == 4'b0100);
-  wire sd_region_w = dmem_wvalid && (dmem_waddr[19:16] == 4'b0100);
+  wire sd_region_r = dmem_rvalid && !dmem_raddr[31] && (dmem_raddr[19:16] == 4'b0100);
+  wire sd_region_w = dmem_wvalid && !dmem_waddr[31] && (dmem_waddr[19:16] == 4'b0100);
 
   wire        sd_init_done;
   wire        sd_busy;
@@ -327,8 +327,8 @@ module top #(
   //       controller acknowledges the transaction.
   //       Byte enables (dmem_wstrb) are forwarded as DQM (inverted).
 
-  wire sdram_region_r = dmem_rvalid && (dmem_raddr[19:16] == 4'b0101);
-  wire sdram_region_w = dmem_wvalid && (dmem_waddr[19:16] == 4'b0101);
+  wire sdram_region_r = dmem_rvalid && !dmem_raddr[31] && (dmem_raddr[19:16] == 4'b0101);
+  wire sdram_region_w = dmem_wvalid && !dmem_waddr[31] && (dmem_waddr[19:16] == 4'b0101);
 
   wire        sdram_init_done;
   wire        sdram_busy_n;
@@ -614,8 +614,8 @@ module top #(
   // Address decode: bits [29:28] == 2'b10 selects the CLINT region.
   // (0x0200_0000 → addr[29:28] = 2'b10, addr[27:0] = 0)
 
-  wire clint_region_r = dmem_rvalid && (dmem_raddr[29:28] == 2'b10);
-  wire clint_region_w = dmem_wvalid && (dmem_waddr[29:28] == 2'b10);
+  wire clint_region_r = dmem_rvalid && !dmem_raddr[31] && (dmem_raddr[29:28] == 2'b10);
+  wire clint_region_w = dmem_wvalid && !dmem_waddr[31] && (dmem_waddr[29:28] == 2'b10);
 
   reg [63:0] mtime;
   reg [63:0] mtimecmp;
@@ -699,15 +699,12 @@ module top #(
   end
 
   // ── Data-bus read mux ─────────────────────────────────────────────────────
-  // Status word bit layout:
-  //  [31:26] unused
-  //  [25:20] dbg_prev  — state before entering S_ERROR
-  //  [19:12] dbg_rx    — last SPI rx byte when error occurred
-  //  [11: 6] dbg_state — current FSM state
-  //  [    5] rd_valid
-  //  [    4] (unused, was rd_valid bit 4 — shift to keep low 5 as before)
-  // Redefine compact layout to keep firmware bit defs unchanged (bits [4:0]):
-  //  [4] rd_valid, [3] wr_ready, [2] err, [1] busy, [0] init_done
+  // Status word bit layout (concat MSB→LSB matches Verilog order below):
+  //  [31:25] unused
+  //  [24:19] dbg_prev  — FSM state before entering S_ERROR
+  //  [18:11] dbg_rx    — last SPI rx byte when error occurred
+  //  [10: 5] dbg_state — current sdspi FSM state
+  //  [4:0]   rd_valid, wr_ready, err, busy, init_done
   wire [31:0] sd_status_word = {7'b0, sd_dbg_prev, sd_dbg_rx, sd_dbg_state,
                                 sd_rd_valid, sd_wr_ready, sd_err, sd_busy, sd_init_done};
   wire [31:0] sd_rd_mux = (bus_raddr[3:2] == 2'b00) ? sd_status_word :
@@ -783,7 +780,7 @@ module top #(
   assign ptw_ready = ptw_valid ? bus_rready : 1'b0;
 
   // ── GPIO register ─────────────────────────────────────────────────────────
-  wire gpio_wsel = dmem_wvalid && (dmem_waddr[19:16] == 4'b0010);
+  wire gpio_wsel = dmem_wvalid && !dmem_waddr[31] && (dmem_waddr[19:16] == 4'b0010);
 
   reg [5:0] gpio_out;
   always @(posedge i_clk) begin
