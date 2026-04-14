@@ -241,11 +241,32 @@ module nyanrv (
   // stval and satp share storage with sepc/scause slots via separate regs below
   localparam mcsr_max = 20;
 
+  // PMP CSRs (0x3a0–0x3bf): stored here; no enforcement.  Decoded by csr_addr, not csr_rs
+  // (avoids colliding with csr_satp_idx = 5'h1f).
+  reg [31:0] pmpcfg_r  [0:3];
+  reg [31:0] pmpaddr_r [0:15];
+
   // S-mode CSRs that don't fit neatly into the array (stval, satp)
   reg [31:0] stval_r;   // supervisor trap value
   reg [31:0] satp_r;    // supervisor address translation (MODE + ASID + PPN)
 
-  // Privilege level: 2'b11=M, 2'b01=S, 2'b00=U (U not implemented yet)
+  // Additional M/S CSRs required for OpenSBI compatibility.
+  reg [31:0] mstatush_r;   // 0x310: upper 32 bits of mstatus (MBE/SBE endianness)
+  reg [31:0] mcounteren_r; // 0x306: counter-enable for S-mode
+  reg [31:0] scounteren_r; // 0x106: counter-enable for U-mode
+
+  // Sentinel indices for CSRs stored outside the array.
+  localparam csr_mstatush_idx   = 5'h1d;
+  localparam csr_mcounteren_idx = 5'h1c;
+  localparam csr_scounteren_idx = 5'h1b;
+  localparam csr_readonly0_idx  = 5'h1a;  // read-only zero (mvendorid etc.)
+
+  // A-extension (AMO / LR / SC) state
+  reg        is_amo_q;       // current instruction is AMO/LR/SC
+  reg [4:0]  amo_funct5_q;   // AMO sub-operation (insn[31:27])
+  reg [31:0] amo_loaded_q;   // value loaded from memory (written to rd at completion)
+
+  // Privilege level: 2'b11=M, 2'b01=S, 2'b00=U
   reg [1:0] prv;
   // }}
 
@@ -531,6 +552,7 @@ module nyanrv (
   insn_ebreak_q = { opcode_q, f3_q, insn_q[31:20] } == { 7'b1110011, 3'b000, 12'b000000000001 },
   insn_mret_q = { opcode_q, f3_q, insn_q[31:20] }   == { 7'b1110011, 3'b000, 12'b001100000010 },
   insn_sret_q = { opcode_q, f3_q, insn_q[31:20] }   == { 7'b1110011, 3'b000, 12'b000100000010 },
+  insn_wfi_q  = { opcode_q, f3_q, insn_q[31:20] }   == { 7'b1110011, 3'b000, 12'b000100000101 },
   // SFENCE.VMA: funct7=0001001, funct3=000, rd=0, opcode=SYSTEM
   insn_sfence_vma_q = { opcode_q, f3_q, insn_q[31:25] } == { 7'b1110011, 3'b000, 7'b0001001 },
 
@@ -619,12 +641,23 @@ module nyanrv (
 
   // Initialise CSR[] at power-on.
   integer reg_idx;
+  integer pmp_i;
   initial begin
     for (reg_idx = 0; reg_idx < mcsr_max; reg_idx = reg_idx + 1)
-      // misa: MXL=01 (RV32), extensions I(8) + M(12) + S(18)
-      CSR[reg_idx] = (reg_idx == misa) ? 32'h4004_1100 : 32'b0;
+      // misa: MXL=01 (RV32), extensions A(0) + I(8) + M(12) + S(18) + U(20)
+      CSR[reg_idx] = (reg_idx == misa) ? 32'h4014_1101 : 32'b0;
+    for (pmp_i = 0; pmp_i < 4; pmp_i = pmp_i + 1)
+      pmpcfg_r[pmp_i] = 32'b0;
+    for (pmp_i = 0; pmp_i < 16; pmp_i = pmp_i + 1)
+      pmpaddr_r[pmp_i] = 32'b0;
     stval_r = 32'b0;
     satp_r  = 32'b0;
+    mstatush_r   = 32'b0;
+    mcounteren_r = 32'b0;
+    scounteren_r = 32'b0;
+    is_amo_q     = 1'b0;
+    amo_funct5_q = 5'b0;
+    amo_loaded_q = 32'b0;
     prv     = 2'b11;  // start in M-mode
   end
 
@@ -638,6 +671,16 @@ module nyanrv (
       prv <= 2'b11;
       stval_r <= 32'b0;
       satp_r  <= 32'b0;
+      mstatush_r   <= 32'b0;
+      mcounteren_r <= 32'b0;
+      scounteren_r <= 32'b0;
+      is_amo_q     <= 1'b0;
+      amo_funct5_q <= 5'b0;
+      amo_loaded_q <= 32'b0;
+      for (pmp_i = 0; pmp_i < 4; pmp_i = pmp_i + 1)
+        pmpcfg_r[pmp_i] <= 32'b0;
+      for (pmp_i = 0; pmp_i < 16; pmp_i = pmp_i + 1)
+        pmpaddr_r[pmp_i] <= 32'b0;
       ptw_addr_r  <= 32'b0;
       ptw_valid_r <= 1'b0;
       ptw_state   <= PTW_L1;
@@ -838,6 +881,7 @@ module nyanrv (
             if (opcode == 7'b0000011 &&
                 (f3 == 3'b000 || f3 == 3'b001 || f3 == 3'b010 ||
                  f3 == 3'b100 || f3 == 3'b101)) begin  // Load (valid funct3)
+              is_amo_q <= 1'b0;
               load_eff_addr_q <= load_addr_full;
               // Check alignment: LH/LHU need 2-byte, LW needs 4-byte alignment
               if ((f3 == 3'b001 || f3 == 3'b101) && load_addr_full[0]) begin
@@ -867,6 +911,7 @@ module nyanrv (
 `endif
             end else if (opcode == 7'b0100011 &&
                          (f3 == 3'b000 || f3 == 3'b001 || f3 == 3'b010)) begin  // Store (valid funct3)
+              is_amo_q <= 1'b0;
               cpu_state <= cpu_state_store;
               store_eff_addr_q <= store_addr_full;
               dmem_waddr <= store_addr_full & 32'hffff_fffc;
@@ -962,10 +1007,31 @@ module nyanrv (
               end
               cpu_state <= cpu_state_muldiv;
 `endif
+            end else if (opcode == 7'b0101111 && f3 == 3'b010) begin
+              // A extension: AMO / LR.W / SC.W (funct3=010 = word)
+              is_amo_q     <= 1'b1;
+              amo_funct5_q <= insn[31:27];
+              if (insn[31:27] == 5'b00011) begin
+                // SC.W: store-conditional (always succeeds on single-hart)
+                store_eff_addr_q <= rf_rs1_f;
+                dmem_waddr   <= rf_rs1_f & 32'hffff_fffc;
+                dmem_wdata   <= rf_rs2_f;
+                dmem_wstrb   <= 4'b1111;
+                mem_align_trap <= (rf_rs1_f[1:0] != 2'b00);
+                amo_loaded_q <= 32'd0;  // rd = 0 (SC success)
+                cpu_state    <= cpu_state_store;
+              end else begin
+                // LR.W (00010) or AMO (others): load from address rs1
+                load_eff_addr_q <= rf_rs1_f;
+                dmem_raddr   <= rf_rs1_f & 32'hffff_fffc;
+                mem_align_trap <= (rf_rs1_f[1:0] != 2'b00);
+                cpu_state    <= cpu_state_load;
+              end
             end else begin
               // All other opcodes (including load/store with invalid funct3)
               // are handled in cpu_state_execute where the combinational `trap`
               // signal will assert for unrecognized encodings.
+              is_amo_q <= 1'b0;
               cpu_state <= cpu_state_execute;
             end
             end  // else: normal instruction latch (irq_pending == 0)
@@ -1079,9 +1145,18 @@ module nyanrv (
               write_rd_prev <= 1'b0;
             end
             if (write_csr_rd) begin
+              if (csr_addr >= 12'h3a0 && csr_addr <= 12'h3a3)
+                pmpcfg_r[csr_addr[1:0]] <= csr_rd_val;
+              else if (csr_addr >= 12'h3b0 && csr_addr <= 12'h3bf)
+                pmpaddr_r[csr_addr[3:0]] <= csr_rd_val;
+              else begin
               case (csr_rd)
-                csr_stval_idx: stval_r <= csr_rd_val;
-                csr_satp_idx:  satp_r  <= csr_rd_val;
+                csr_stval_idx:      stval_r      <= csr_rd_val;
+                csr_satp_idx:       satp_r       <= csr_rd_val;
+                csr_mstatush_idx:   mstatush_r   <= csr_rd_val;
+                csr_mcounteren_idx: mcounteren_r <= csr_rd_val;
+                csr_scounteren_idx: scounteren_r <= csr_rd_val;
+                csr_readonly0_idx:  ;  // discard writes to read-only zero CSRs
                 // sstatus writes update the S-mode visible fields of mstatus
                 sstatus: CSR[mstatus] <= (CSR[mstatus] & ~32'h800d_e122) |
                                          (csr_rd_val   &  32'h800d_e122);
@@ -1091,6 +1166,7 @@ module nyanrv (
                 sip: CSR[mip] <= csr_rd_val;
                 default: CSR[csr_rd] <= csr_rd_val;
               endcase
+              end
             end
             // MRET: restore mstatus — MIE←MPIE, MPIE←1, MPP←0, prv←MPP.
             if (insn_mret_q) begin
@@ -1303,10 +1379,30 @@ module nyanrv (
 `ifdef RISCV_FORMAL
             rvfi_mem_rdata_q <= i_dmem_rdata;
 `endif
-            // Clear forwarding state: load result is now in regfile; next fetch
-            // must read from regfile directly, not from a stale rd_val_prev.
             write_rd_prev <= 1'b0;
 
+            if (is_amo_q && amo_funct5_q != 5'b00010) begin
+              // AMO (not LR): save loaded value, compute result, issue store
+              amo_loaded_q <= i_dmem_rdata;
+              store_eff_addr_q <= load_eff_addr_q;
+              dmem_waddr   <= load_eff_addr_q & 32'hffff_fffc;
+              dmem_wstrb   <= 4'b1111;
+              mem_align_trap <= 1'b0;
+              case (amo_funct5_q)
+                5'b00001: dmem_wdata <= rf_rs2_x;                                               // amoswap
+                5'b00000: dmem_wdata <= i_dmem_rdata + rf_rs2_x;                                // amoadd
+                5'b00100: dmem_wdata <= i_dmem_rdata ^ rf_rs2_x;                                // amoxor
+                5'b01100: dmem_wdata <= i_dmem_rdata & rf_rs2_x;                                // amoand
+                5'b01000: dmem_wdata <= i_dmem_rdata | rf_rs2_x;                                // amoor
+                5'b10000: dmem_wdata <= ($signed(i_dmem_rdata) < $signed(rf_rs2_x)) ? i_dmem_rdata : rf_rs2_x;  // amomin
+                5'b10100: dmem_wdata <= ($signed(i_dmem_rdata) > $signed(rf_rs2_x)) ? i_dmem_rdata : rf_rs2_x;  // amomax
+                5'b11000: dmem_wdata <= (i_dmem_rdata < rf_rs2_x) ? i_dmem_rdata : rf_rs2_x;   // amominu
+                5'b11100: dmem_wdata <= (i_dmem_rdata > rf_rs2_x) ? i_dmem_rdata : rf_rs2_x;   // amomaxu
+                default:  dmem_wdata <= i_dmem_rdata;
+              endcase
+              cpu_state <= cpu_state_store;
+            end else begin
+            // Normal load (or LR.W): write to rd and go to fetch
             pc <= pc_next;
             cpu_state <= cpu_state_fetch;
 
@@ -1347,7 +1443,8 @@ module nyanrv (
             rvfi_csr_mtval_rmask    <= 32'b0; rvfi_csr_mtval_wmask    <= 32'b0;
             rvfi_csr_mtval_rdata    <= rvfi_csr_mtval_pre; rvfi_csr_mtval_wdata    <= rvfi_csr_mtval_pre;
 `endif
-          end
+          end  // else (normal load / LR path)
+          end  // if (i_dmem_rready)
         end  // case: cpu_state_load
 
         cpu_state_store: begin
@@ -1969,6 +2066,9 @@ module nyanrv (
       pc_next = CSR[mepc];
     end else if (insn_sret_q) begin
       pc_next = CSR[sepc];
+    end else if (insn_wfi_q) begin
+      // Single-hart implementation: treat WFI as a NOP.
+      // This avoids illegal-instruction traps in OpenSBI hang/idle paths.
     end else if (insn_csrrw_q || insn_csrrs_q || insn_csrrc_q ||
        insn_csrrwi_q || insn_csrrsi_q || insn_csrrci_q) begin
       case (csr_addr)
@@ -1984,11 +2084,17 @@ module nyanrv (
         12'h342: begin csr_rs = mcause;   csr_rd = mcause;   end
         12'h343: begin csr_rs = mtval;    csr_rd = mtval;    end
         12'h344: begin csr_rs = mip;      csr_rd = mip;      end
+        12'h306: begin csr_rs = csr_mcounteren_idx; csr_rd = csr_mcounteren_idx; end  // mcounteren
+        12'h310: begin csr_rs = csr_mstatush_idx;   csr_rd = csr_mstatush_idx;   end  // mstatush
+        12'hf11: begin csr_rs = csr_readonly0_idx;  csr_rd = csr_readonly0_idx;  end  // mvendorid
+        12'hf12: begin csr_rs = csr_readonly0_idx;  csr_rd = csr_readonly0_idx;  end  // marchid
+        12'hf13: begin csr_rs = csr_readonly0_idx;  csr_rd = csr_readonly0_idx;  end  // mimpid
         12'hf14: begin csr_rs = mhartid;  csr_rd = mhartid;  end
         12'h744: begin csr_rs = mnstatus; csr_rd = mnstatus; end
         // ── S-mode CSRs ──────────────────────────────────────────────
         12'h100: begin csr_rs = sstatus;  csr_rd = sstatus;  end
         12'h104: begin csr_rs = sie;      csr_rd = sie;      end
+        12'h106: begin csr_rs = csr_scounteren_idx; csr_rd = csr_scounteren_idx; end  // scounteren
         12'h105: begin csr_rs = stvec;    csr_rd = stvec;    end
         12'h140: begin csr_rs = sscratch; csr_rd = sscratch; end
         12'h141: begin csr_rs = sepc;     csr_rd = sepc;     end
@@ -1996,6 +2102,32 @@ module nyanrv (
         12'h143: begin csr_rs = csr_stval_idx; csr_rd = csr_stval_idx; end  // stval
         12'h144: begin csr_rs = sip;          csr_rd = sip;           end
         12'h180: begin csr_rs = csr_satp_idx; csr_rd = csr_satp_idx;  end  // satp
+        // Machine counters (stub: read 0; optional writes discarded if using readonly)
+        12'hb00: begin csr_rs = csr_readonly0_idx; csr_rd = csr_readonly0_idx; end  // mcycle
+        12'hb02: begin csr_rs = csr_readonly0_idx; csr_rd = csr_readonly0_idx; end  // minstret
+        12'hb80: begin csr_rs = csr_readonly0_idx; csr_rd = csr_readonly0_idx; end  // mcycleh
+        12'hb82: begin csr_rs = csr_readonly0_idx; csr_rd = csr_readonly0_idx; end  // minstreth
+        // PMP: decoded by csr_addr in csr_rval / write-back (pmpcfg_r / pmpaddr_r).
+        12'h3a0: begin csr_rs = csr_readonly0_idx; csr_rd = csr_readonly0_idx; end
+        12'h3a1: begin csr_rs = csr_readonly0_idx; csr_rd = csr_readonly0_idx; end
+        12'h3a2: begin csr_rs = csr_readonly0_idx; csr_rd = csr_readonly0_idx; end
+        12'h3a3: begin csr_rs = csr_readonly0_idx; csr_rd = csr_readonly0_idx; end
+        12'h3b0: begin csr_rs = csr_readonly0_idx; csr_rd = csr_readonly0_idx; end
+        12'h3b1: begin csr_rs = csr_readonly0_idx; csr_rd = csr_readonly0_idx; end
+        12'h3b2: begin csr_rs = csr_readonly0_idx; csr_rd = csr_readonly0_idx; end
+        12'h3b3: begin csr_rs = csr_readonly0_idx; csr_rd = csr_readonly0_idx; end
+        12'h3b4: begin csr_rs = csr_readonly0_idx; csr_rd = csr_readonly0_idx; end
+        12'h3b5: begin csr_rs = csr_readonly0_idx; csr_rd = csr_readonly0_idx; end
+        12'h3b6: begin csr_rs = csr_readonly0_idx; csr_rd = csr_readonly0_idx; end
+        12'h3b7: begin csr_rs = csr_readonly0_idx; csr_rd = csr_readonly0_idx; end
+        12'h3b8: begin csr_rs = csr_readonly0_idx; csr_rd = csr_readonly0_idx; end
+        12'h3b9: begin csr_rs = csr_readonly0_idx; csr_rd = csr_readonly0_idx; end
+        12'h3ba: begin csr_rs = csr_readonly0_idx; csr_rd = csr_readonly0_idx; end
+        12'h3bb: begin csr_rs = csr_readonly0_idx; csr_rd = csr_readonly0_idx; end
+        12'h3bc: begin csr_rs = csr_readonly0_idx; csr_rd = csr_readonly0_idx; end
+        12'h3bd: begin csr_rs = csr_readonly0_idx; csr_rd = csr_readonly0_idx; end
+        12'h3be: begin csr_rs = csr_readonly0_idx; csr_rd = csr_readonly0_idx; end
+        12'h3bf: begin csr_rs = csr_readonly0_idx; csr_rd = csr_readonly0_idx; end
         default: trap = 1'b1;
       endcase  // case (csr_addr)
 
@@ -2003,13 +2135,21 @@ module nyanrv (
       // Read value mux (live values for mip, sstatus, sip, sie, stval, satp)
       begin : csr_rval
         reg [31:0] raw_rd;
-        case (csr_rs)
+        if (csr_addr >= 12'h3a0 && csr_addr <= 12'h3a3)
+          raw_rd = pmpcfg_r[csr_addr[1:0]];
+        else if (csr_addr >= 12'h3b0 && csr_addr <= 12'h3bf)
+          raw_rd = pmpaddr_r[csr_addr[3:0]];
+        else case (csr_rs)
           mip:     raw_rd = mip_live;
           sstatus: raw_rd = sstatus_live;
           sip:     raw_rd = sip_live;
           sie:     raw_rd = sie_live;
-          csr_stval_idx: raw_rd = stval_r;
-          csr_satp_idx:  raw_rd = satp_r;
+          csr_stval_idx:      raw_rd = stval_r;
+          csr_satp_idx:       raw_rd = satp_r;
+          csr_mstatush_idx:   raw_rd = mstatush_r;
+          csr_mcounteren_idx: raw_rd = mcounteren_r;
+          csr_scounteren_idx: raw_rd = scounteren_r;
+          csr_readonly0_idx:  raw_rd = 32'b0;
           default: raw_rd = CSR[csr_rs];
         endcase
         rd_val = raw_rd;
@@ -2056,11 +2196,21 @@ module nyanrv (
       end
     end
     // Load state: memory read result (only when data is ready, not misaligned).
-    if (cpu_state == cpu_state_load && !mem_align_trap && i_dmem_rready) begin
+    // Suppress for AMO non-LR: rd is written later at store completion.
+    if (cpu_state == cpu_state_load && !mem_align_trap && i_dmem_rready &&
+        !(is_amo_q && amo_funct5_q != 5'b00010)) begin
       if (rd_q != 5'b0) begin
         x_we    = 1'b1;
         x_waddr = rd_q;
         x_wdata = load_wdata;
+      end
+    end
+    // Store state: AMO/SC writeback — write amo_loaded_q to rd on store completion.
+    if (cpu_state == cpu_state_store && is_amo_q && !mem_align_trap && i_dmem_wready) begin
+      if (rd_q != 5'b0) begin
+        x_we    = 1'b1;
+        x_waddr = rd_q;
+        x_wdata = amo_loaded_q;
       end
     end
     // Muldiv state: write result when divider finishes (div_cnt == 0).

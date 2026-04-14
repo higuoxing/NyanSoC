@@ -15,10 +15,53 @@ Goal: run full MMU Linux (Sv32) on the Tang Nano 20K.
 | Sv32 MMU | ✅ Done, sim-tested |
 | SDRAM direct CPU address mapping | ✅ Done, hardware verified |
 | PLIC | ✅ Done, hardware verified |
-| OpenSBI port | ✅ Done, hardware verified |
+| OpenSBI + SD boot (port, CPU CSR/AMO/PMP fixes, stub kernel) | ✅ Done — see `firmware/hello_world/README.md` |
 | UART loader + SDRAM instruction fetch | ✅ Done, hardware verified |
 | Linux kernel build | 🔄 WIP — configs ready, needs Linux build host |
-| SD card bootloader | ❌ Not started |
+| SD card bootloader | ✅ Done (hardware; loads OpenSBI + stub + DTB) |
+
+---
+
+## Firmware and image contents
+
+This section lists **what each deliverable is** and **what gets flashed where**. (512-byte sectors unless noted.)
+
+### IMEM in the FPGA bitstream (`tangnano20k.fs`)
+
+The SoC boots from **4 KiB LUT-ROM** at reset. Which program is baked in is selected at synthesis time:
+
+| `make -C boards/tangnano20k FW=…` | Source | Role |
+|-----------------------------------|--------|------|
+| `echo` (default `FW`) | `firmware/echo/` | Tiny UART echo test |
+| `uart_loader` | `firmware/uart_loader/` | Receives programs over UART; run SDRAM code via `scripts/uart_load.py` |
+| `bootloader` | `firmware/bootloader/` | SD card: loads OpenSBI + kernel slot + DTB into SDRAM, then jumps to OpenSBI |
+| `hello_world` | `firmware/hello_world/` | Demo print loop from IMEM |
+| (others) | `firmware/<name>/` | See `boards/tangnano20k/Makefile` / repo docs |
+
+**SD boot path:** build and flash with **`FW=bootloader`**. The SD card supplies the large binaries; the bitstream only holds the loader.
+
+### SD card raw image (`nyansoc_sd.img` from `scripts/make_sd_image.sh` or `make -C sw sd-image`)
+
+No partition table. Typical layout (see `scripts/make_sd_image.sh`):
+
+| Sectors | Size | File on host | Loaded to SDRAM | Purpose |
+|--------:|------|--------------|-----------------|--------|
+| 0 | 1 sector | zeros (reserved) | — | — |
+| 1–516 | 258 KiB | `sw/opensbi/build/platform/nyansoc/firmware/fw_jump.bin` | `0x8000_0000` | OpenSBI (`fw_jump`) |
+| 517–524 | 4 KiB | `firmware/sbi_stub/sbi_stub.bin` | `0x8020_0000` | Stub “kernel” (S-mode test; replace with Linux `Image` later) |
+| 525–532 | 4 KiB | `boards/tangnano20k/nyansoc.dtb` | `0x8100_0000` | Device tree |
+
+**Flash:** `dd if=nyansoc_sd.img of=/dev/sdX …` (or `make_sd_image.sh` to a device). **First 533 sectors** are the active image.
+
+**Bootloader jump:** `a0 = 0` (hartid), `a1 = 0x81000000` (DTB physical address).
+
+### UART load (no SD)
+
+Use **`FW=uart_loader`** in the bitstream, then e.g. `python3 scripts/uart_load.py run firmware/hello_world/hello_world.bin 0x80000000` — program lives in **SDRAM**, not on SD.
+
+### Linux / future SD card
+
+When the real kernel exists, replace the stub sector range with **`arch/riscv/boot/Image`** (or your built image) and extend sector counts in `make_sd_image.sh` as needed (`TODO.md` Phase 5).
 
 ---
 
@@ -147,8 +190,10 @@ Changes to `boards/tangnano20k/top.v`.
 - [x] Define SD card image layout (`scripts/make_sd_image.sh`):
   - Raw sector layout, no partition table
   - Script assembles `nyansoc_sd.img` from `fw_jump.bin`, kernel, and DTB
+- **What is on the SD card** (and what is in the bitstream IMEM): see **Firmware and image contents** at the top of this file.
 - [ ] Replace stub kernel with real Linux `Image` in SD card layout once kernel is built
 - [ ] Update `make_sd_image.sh` sector counts for actual kernel size
+- [ ] Optional: confirm OpenSBI + stub console output on UART after each RTL change (rebuild `tangnano20k.fs` when `rtl/nyanrv.v` changes)
 
 ---
 

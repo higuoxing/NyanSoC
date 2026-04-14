@@ -8,6 +8,21 @@
  * This proves OpenSBI booted, delegated to S-mode, and SBI calls work.
  */
 
+/* Direct UART fallback (works even if SBI console is broken) */
+#define UART_TX ((volatile unsigned int *)0x00030004)
+
+static void uart_putc(char c)
+{
+    while (*UART_TX & 1u)
+        ;
+    *UART_TX = (unsigned char)c;
+}
+
+static void uart_puts(const char *s)
+{
+    while (*s) uart_putc(*s++);
+}
+
 /* SBI ecall: console putchar (legacy extension 0x01) */
 static void sbi_putc(char c)
 {
@@ -44,6 +59,9 @@ static void __attribute__((noreturn)) sbi_shutdown(void)
 
 void kmain(unsigned long hartid, unsigned long dtb_pa)
 {
+    /* Diagnostic marker: proves OpenSBI reached S-mode payload entry. */
+    uart_puts("\r\n[S-STUB] entered kmain via OpenSBI\r\n");
+
     sbi_puts("\r\n");
     sbi_puts("========================================\r\n");
     sbi_puts("  NyanSoC S-mode stub kernel\r\n");
