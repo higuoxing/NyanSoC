@@ -8,7 +8,7 @@ This firmware is the **smallest SDRAM sanity check** on NyanSoC. Related work th
 
 - **Host UART on Linux**: `scripts/uart_load.py` was hardened (raw `termios`, flow control, timing) for `/dev/ttyUSB*`; docs cover `picocom --noreset`, echo/loopback pitfalls, and `dialout`.
 - **UART loader** (`firmware/uart_loader/`): short delay at reset so the host port is ready before the loader speaks; IMEM ROM path unchanged in spirit.
-- **SD card bootloader** (`firmware/bootloader/`): loads OpenSBI, a stub “kernel”, and DTB from **raw sectors** into SDRAM, then jumps to OpenSBI at `0x80000000` with `a0=0`, `a1=0x81000000`. Uses a **DMEM sector buffer** then bulk copy to SDRAM to avoid SD/SDRAM bus contention; `boards/tangnano20k/top.v` decodes peripheral writes only when `!addr[31]` so SDRAM writes do not alias DMEM/MMIO.
+- **SD card bootloader** (`firmware/bootloader/`): loads OpenSBI, a stub “kernel”, and DTB from **raw sectors** into SDRAM, then jumps to OpenSBI at `0x80000000` with `a0=0`, `a1=0x80100000`. Uses a **DMEM sector buffer** then bulk copy to SDRAM to avoid SD/SDRAM bus contention; `boards/tangnano20k/top.v` decodes peripheral writes only when `!addr[31]` so SDRAM writes do not alias DMEM/MMIO.
 - **SDSPI RTL**: SDHC vs SDSC addressing for CMD17/CMD24 from OCR CCS; status decode aligned with `top.v`.
 - **CPU (`rtl/nyanrv.v`) for OpenSBI**: `mstatush`, `mcounteren`/`scounteren`, read-only ID CSRs, corrected `misa` (A/U); **AMO** (`amoswap`, `amoadd`, `lr`/`sc`, etc.) for the `A` extension; **`wfi`** as NOP on this single-hart core; **PMP** CSRs (`0x3a0`–`0x3bf`) and **counter stubs** (`mcycle`/`minstret`/`…h`) so OpenSBI’s `sbi_hart_init` does not spin on illegal CSR traps.
 - **Stub kernel** (`firmware/sbi_stub/`): minimal S-mode image at `0x80200000`; can include a **direct UART** line for diagnostics (independent of SBI console ecalls).
@@ -18,7 +18,7 @@ This firmware is the **smallest SDRAM sanity check** on NyanSoC. Related work th
   |-----------|----------------|
   | 1–516     | OpenSBI `fw_jump.bin` → SDRAM `0x80000000` |
   | 517–524   | `sbi_stub.bin` (stub kernel) → `0x80200000` |
-  | 525–532   | `nyansoc.dtb` → `0x81000000` |
+  | 525–532   | `nyansoc.dtb` → `0x80100000` |
 
   The FPGA bitstream usually has **`FW=bootloader`** so the SoC runs that loader from IMEM LUT-ROM; the SD card supplies OpenSBI + stub + DTB (not `hello_world` unless you load it another way).
 

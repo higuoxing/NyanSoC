@@ -3,9 +3,9 @@ CC      := $(CROSS)-gcc
 OBJCOPY := $(CROSS)-objcopy
 OBJDUMP := $(CROSS)-objdump
 
-CFLAGS  := -march=rv32im_zicsr -mabi=ilp32 -Os -ffreestanding -nostdlib \
+CFLAGS  := -march=rv32im_zicsr_zifencei -mabi=ilp32 -Os -ffreestanding -nostdlib \
             -nostartfiles -Wall -Wextra
-LDFLAGS := -T link.ld -march=rv32im_zicsr -mabi=ilp32 -nostdlib \
+LDFLAGS := -T link.ld -march=rv32im_zicsr_zifencei -mabi=ilp32 -nostdlib \
             -nostartfiles -Wl,--no-relax
 
 SRCS    := start.S bootloader.c

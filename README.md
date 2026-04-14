@@ -223,7 +223,7 @@ Once built, load everything over UART (~4–10 min at 115200 baud):
 PORT=/dev/tty.usbserial-XXXX
 python3 scripts/uart_load.py -p $PORT load sw/opensbi/build/platform/nyansoc/firmware/fw_jump.bin 0x80000000
 python3 scripts/uart_load.py -p $PORT load linux/arch/riscv/boot/Image                             0x80200000
-python3 scripts/uart_load.py -p $PORT load boards/tangnano20k/nyansoc.dtb                          0x81000000
+python3 scripts/uart_load.py -p $PORT load boards/tangnano20k/nyansoc.dtb                          0x80100000
 python3 scripts/uart_load.py -p $PORT go 0x80000000 --stay
 ```
 

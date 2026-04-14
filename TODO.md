@@ -49,11 +49,11 @@ No partition table. Typical layout (see `scripts/make_sd_image.sh`):
 | 0 | 1 sector | zeros (reserved) | — | — |
 | 1–516 | 258 KiB | `sw/opensbi/build/platform/nyansoc/firmware/fw_jump.bin` | `0x8000_0000` | OpenSBI (`fw_jump`) |
 | 517–524 | 4 KiB | `firmware/sbi_stub/sbi_stub.bin` | `0x8020_0000` | Stub “kernel” (S-mode test; replace with Linux `Image` later) |
-| 525–532 | 4 KiB | `boards/tangnano20k/nyansoc.dtb` | `0x8100_0000` | Device tree |
+| 525–532 | 4 KiB | `boards/tangnano20k/nyansoc.dtb` | `0x8010_0000` | Device tree |
 
 **Flash:** `dd if=nyansoc_sd.img of=/dev/sdX …` (or `make_sd_image.sh` to a device). **First 533 sectors** are the active image.
 
-**Bootloader jump:** `a0 = 0` (hartid), `a1 = 0x81000000` (DTB physical address).
+**Bootloader jump:** `a0 = 0` (hartid), `a1 = 0x80100000` (DTB physical address; `0x81000000` aliases to OpenSBI base on 8 MiB SDRAM).
 
 ### UART load (no SD)
 
@@ -129,7 +129,7 @@ Changes to `boards/tangnano20k/top.v`.
   - Custom UART driver (`uart_nyansoc.c`) — not 8250-compatible
   - ACLINT MTIMER at `0x0200_0000`, `has_64bit_mmio=false` (32-bit MMIO)
   - PLIC at `0x0C00_0000`, 1 source, S-mode context 0, no M-mode context
-  - `fw_jump` firmware: loads at `0x8000_0000`, jumps to `0x8020_0000` (kernel), DTB at `0x8100_0000`
+  - `fw_jump` firmware: loads at `0x8000_0000`, jumps to `0x8020_0000` (kernel), DTB at `0x8010_0000`
   - Build: `make -C sw opensbi` (applies no-PIE patch, syncs platform files, builds)
   - Output: `sw/opensbi/build/platform/nyansoc/firmware/fw_jump.bin` (258 KB) — builds cleanly
 - [x] Write Device Tree Source (`.dts`) for NyanSoC:
@@ -174,7 +174,7 @@ Changes to `boards/tangnano20k/top.v`.
     ```bash
     python3 scripts/uart_load.py -p /dev/ttyUSB0 load sw/opensbi/.../fw_jump.bin 0x80000000
     python3 scripts/uart_load.py -p /dev/ttyUSB0 load linux/arch/riscv/boot/Image  0x80200000
-    python3 scripts/uart_load.py -p /dev/ttyUSB0 load boards/tangnano20k/nyansoc.dtb 0x81000000
+    python3 scripts/uart_load.py -p /dev/ttyUSB0 load boards/tangnano20k/nyansoc.dtb 0x80100000
     python3 scripts/uart_load.py -p /dev/ttyUSB0 go 0x80000000 --stay
     ```
 
@@ -185,8 +185,8 @@ Changes to `boards/tangnano20k/top.v`.
   - Waits for SDRAM and SD card init, then loads from raw sectors:
     - Sectors 1–516: `fw_jump.bin` (OpenSBI, 258 KB) → `0x8000_0000`
     - Sectors 517–524: stub kernel (8 sectors) → `0x8020_0000`
-    - Sectors 525–532: `nyansoc.dtb` (8 sectors) → `0x8100_0000`
-  - Jumps to OpenSBI entry with `a0=0` (hartid), `a1=0x8100_0000` (DTB PA)
+    - Sectors 525–532: `nyansoc.dtb` (8 sectors) → `0x8010_0000`
+  - Jumps to OpenSBI entry with `a0=0` (hartid), `a1=0x8010_0000` (DTB PA)
 - [x] Define SD card image layout (`scripts/make_sd_image.sh`):
   - Raw sector layout, no partition table
   - Script assembles `nyansoc_sd.img` from `fw_jump.bin`, kernel, and DTB

@@ -12,7 +12,11 @@
  * Load addresses:
  *   OpenSBI   → 0x8000_0000  (fw_jump entry point)
  *   Stub      → 0x8020_0000  (fw_jump jumps here in S-mode)
- *   DTB       → 0x8100_0000  (passed in a1 to OpenSBI)
+ *   DTB       → 0x8010_0000  (passed in a1 to OpenSBI)
+ *
+ *   Note: GW2AR SDRAM is 8 MiB with COLUMN_WIDTH=8; byte addresses use
+ *   word index addr[22:2] (21 bits).  0x8100_0000 aliases to 0x8000_0000,
+ *   so loading the DTB there overwrote OpenSBI.  Use 0x8010_0000 instead.
  *
  * SDRAM init is done by the hardware controller before reset is released,
  * but we poll the init_done bit to be safe.
@@ -46,7 +50,7 @@
 /* ── Load addresses ──────────────────────────────────────────────────────── */
 #define OPENSBI_LOAD_ADDR  0x80000000u
 #define STUB_LOAD_ADDR     0x80200000u
-#define DTB_LOAD_ADDR      0x81000000u
+#define DTB_LOAD_ADDR      0x80100000u
 
 /* ── UART ────────────────────────────────────────────────────────────────── */
 static void uart_putc(unsigned char c)
@@ -232,7 +236,7 @@ int main(void)
     uart_puthex(STUB_LOAD_ADDR);
     uart_puts("\r\n");
 
-    /* 5. Load DTB → 0x8100_0000 */
+    /* 5. Load DTB → 0x8010_0000 (must lie within 8 MiB SDRAM; see file header) */
     uart_puts("Loading DTB...\r\n");
     {
         int err = sd_read_sectors(DTB_SECTOR_START, DTB_SECTOR_COUNT,
@@ -252,6 +256,16 @@ int main(void)
     uart_puts("Jumping to OpenSBI at ");
     uart_puthex(OPENSBI_LOAD_ADDR);
     uart_puts("...\r\n");
+
+    /* OpenSBI was copied into SDRAM; make those stores visible to instruction
+     * fetch (RISC-V requires fence.i after writing executable memory). Also
+     * quiet stray M-mode interrupts so the cold boot path is predictable. */
+    __asm__ volatile(
+        "csrw mie, zero\n\t"
+        "csrci mstatus, 8\n\t"
+        "fence rw, rw\n\t"
+        "fence.i\n\t"
+        ::: "memory");
 
     typedef void (*entry_t)(unsigned long hartid, unsigned long dtb_pa)
         __attribute__((noreturn));

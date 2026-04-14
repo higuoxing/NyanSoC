@@ -11,7 +11,8 @@ PLATFORM_RISCV_CODE_MODEL = medany
 platform-objs-y += platform.o uart_nyansoc.o
 
 # fw_jump: OpenSBI jumps to a fixed kernel address.
-# The bootloader places the kernel at 0x8020_0000 and the DTB at 0x8100_0000.
+# The bootloader places the kernel at 0x8020_0000 and the DTB at 0x8010_0000
+# (8 MiB SDRAM; 0x8100_0000 aliases to 0x8000_0000 — do not use).
 FW_JUMP       = y
 FW_JUMP_ADDR  = 0x80200000
-FW_JUMP_FDT_ADDR = 0x81000000
+FW_JUMP_FDT_ADDR = 0x80100000

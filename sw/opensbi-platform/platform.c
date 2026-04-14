@@ -9,12 +9,12 @@
  *   CLINT:  standard layout, base 0x0200_0000, 32-bit MMIO
  *   PLIC:   1 source (UART RX = ID 1), 1 S-mode context (ctx 0)
  *           base 0x0C00_0000
- *   SDRAM:  32 MB at 0x8000_0000 (OpenSBI loads here)
+ *   SDRAM:  8 MiB unique at 0x8000_0000 (COLUMN_WIDTH=8); map spans 32 MiB but aliases.
  *
  * Boot flow:
  *   Bootloader → OpenSBI (fw_jump) at 0x8000_0000  (M-mode)
  *              → Linux kernel               at 0x8020_0000  (S-mode)
- *              → DTB                        at 0x8100_0000
+ *              → DTB                        at 0x8010_0000  (not 0x8100_0000 — aliases)
  */
 
 #include <sbi/riscv_asm.h>
@@ -78,11 +78,43 @@ static u8 plic_buf[PLIC_DATA_SIZE(1)];  /* 1 hart */
 
 /* ── Platform callbacks ──────────────────────────────────────────────────── */
 
+/*
+ * Console must be registered from nascent_init(): sbi_init() runs it before
+ * MISA / coldboot checks and before init_coldboot() (heap/domain), so failures
+ * there can use sbi_printf instead of hanging with no output.
+ */
+static int nyansoc_nascent_init(void)
+{
+	return uart_nyansoc_init(NYANSOC_UART_ADDR);
+}
+
 static int nyansoc_early_init(bool cold_boot)
 {
-	if (!cold_boot)
+	(void)cold_boot;
+	return 0;
+}
+
+/*
+ * If CSR misa reads as zero, OpenSBI falls back to this. Match rtl/nyanrv.v
+ * reset: RV32IMA + S + U.
+ */
+static int nyansoc_misa_check_extension(char ext)
+{
+	switch (ext) {
+	case 'I':
+	case 'M':
+	case 'A':
+	case 'S':
+	case 'U':
+		return 1;
+	default:
 		return 0;
-	return uart_nyansoc_init(NYANSOC_UART_ADDR);
+	}
+}
+
+static int nyansoc_misa_get_xlen(void)
+{
+	return 1;
 }
 
 static int nyansoc_final_init(bool cold_boot)
@@ -109,10 +141,13 @@ static int nyansoc_timer_init(void)
 /* ── Platform descriptor ─────────────────────────────────────────────────── */
 
 const struct sbi_platform_operations platform_ops = {
-	.early_init   = nyansoc_early_init,
-	.final_init   = nyansoc_final_init,
-	.irqchip_init = nyansoc_irqchip_init,
-	.timer_init   = nyansoc_timer_init,
+	.nascent_init         = nyansoc_nascent_init,
+	.early_init           = nyansoc_early_init,
+	.final_init           = nyansoc_final_init,
+	.irqchip_init         = nyansoc_irqchip_init,
+	.timer_init           = nyansoc_timer_init,
+	.misa_check_extension = nyansoc_misa_check_extension,
+	.misa_get_xlen        = nyansoc_misa_get_xlen,
 };
 
 const struct sbi_platform platform = {
